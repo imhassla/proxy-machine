@@ -158,7 +158,7 @@ def track_proxies():
     os.system('cls' if os.name == 'nt' else 'clear')
 
     # Display the number of proxies in checked_filename and in the proxies set.
-    print(f"proxies in memory:\033[1m\033[31m {len(proxies)}\033[0m")
+    #print(f"proxies in memory:\033[1m\033[31m {len(proxies)}\033[0m")
     print(f"proxies in {checked_filename}: \033[1m\033[32m {len(checked_proxies)}\033[0m\n")
 
     # Print the top 10 proxies to the console.
