@@ -21,13 +21,12 @@ logging.basicConfig(level=logging.INFO)
 os.system('cls' if os.name == 'nt' else 'clear')
 os.system('ulimit -n 4000')
 
-
 if args.url:
     api_url = args.url
 else:
     api_url = f"https://api.proxyscrape.com/v2/?request=displayproxies&protocol={args.type}&timeout={args.p}&country=all&ssl=all&anonymity=all"
 
-max = 1000 #max proxies in memory
+max = args.l*4 #max proxies in memory
 workers = args.w
 
 proxies = set()
@@ -44,14 +43,10 @@ for i in txt:
 if not os.path.exists(checked_filename):
     open(checked_filename, "w").close()
 
-
 def get_proxies():
     # Check if the number of records in the checked_filename file exceeds 100
     with open(checked_filename, 'r') as f:
         if len(f.readlines()) > args.l:
-            # Clear the proxies collection
-            #proxies.clear()
-            # Stop working
             return
     try:
         response = requests.get(api_url)
@@ -71,14 +66,13 @@ def get_proxies():
     for source in additional_sources:
         try:
             response = requests.get(source)
-            new_proxies = set(response.text.splitlines()[:300])
+            new_proxies = set(response.text.splitlines()[:args.l])
             with file_lock:
                 # Update the set of proxies with any new proxies that were retrieved.
                 proxies.update(new_proxies - proxies)
         except requests.exceptions.RequestException as e:
             # Log any errors that occur while retrieving proxies from the additional sources.
             logging.error(f"An error occurred while getting proxies from {source}: {e}")
-
 
 def check_proxy(proxy):
     # Check if a proxy is available by sending a HEAD request to https://httpbin.org/ip.
