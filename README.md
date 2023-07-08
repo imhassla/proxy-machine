@@ -10,12 +10,12 @@ This script requires the following dependencies to be installed:
 - `schedule`
 
 You can install these dependencies using `pip` by running:
-- `pip install requests schedule` or 
-- `pip install -r requirements.txt`
+- `pip install requests schedule` 
 
 ## Usage
 - `git clone https://github.com/imhassla/proxy-machine.git`
 - `cd proxy-machine`
+- `pip install -r requirements.txt`
 - `proxy.py [-h] [-l ] [-p ] [-t ] [-w ]
                 [-type {http,https,socks4,socks5}] [--top] [-url "URL"]`
 
