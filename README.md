@@ -27,7 +27,7 @@ Where `proxy.py` is the name of this script file. The script will continue to ru
 The script generates two output files:
 
 - `checked_proxies.txt`: This file contains a list of available proxies, sorted by response time. Each line of the file contains one proxy in the format `IP:PORT`.
-- `top10.txt`: This file contains a list of the top 10 proxies by continuous availability time. Each line of the file contains one proxy in the format `IP:PORT`.
+- `top10.txt`: (if arg. --top specified). This file contains a list of the top 10 proxies by continuous availability time. Each line of the file contains one proxy in the format `IP:PORT`.
 
 These files can be used to obtain a list of available and reliable proxies for use in other applications.
 
