@@ -27,7 +27,7 @@ While running, it will periodically retrieve, check, and track proxies, updating
 
 options:
 - `  -h, --help            show this help message and exit` 
-- `  -l                    maximum proxies stored in checked_proxies.txt (default=100)`  
+- `  -l                    limit of proxies stored in checked_proxies.txt (default=100)`  
 - `  -p                    max ping (ms.) of the proxy servers (default=300)`                        
 - `  -t                    timeout (s.) of checker (default=3)`  
 - `  -w                    number of worker threads to use when checking proxies (default=50)`
