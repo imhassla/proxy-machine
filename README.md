@@ -26,7 +26,7 @@ proxy.py [-h] [-l ] [-p ] [-t ] [-w ]
 The script retrieve and check http, https, socks4 and socks5 proxies
 
 options:
-  -h, --help            show this help message and exit
+`  -h, --help            show this help message and exit`
   
   -l                    maximum proxies stored in checked_proxies.txt (default=100)
   
