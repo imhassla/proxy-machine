@@ -1,6 +1,6 @@
 # Proxy Machine
 
-This script retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies. It can be run from the command line with several optional arguments to specify the maximum number of proxies to keep in memory, the ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, and the URL of the API to retrieve proxies from.
+This script retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies. It can be run from the command line with several optional arguments to specify the requred ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, and the URL of the API to retrieve proxies from.
 
 ## Dependencies
 
