@@ -1,2 +1,46 @@
-# proxy-machine
-retrieve and check HTTP, HTTPS, SOCKS4, and SOCKS5 proxies
+# Proxy Machine
+
+This script retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies. It can be run from the command line with several optional arguments to specify the maximum number of proxies to keep in memory, the ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, and the URL of the API to retrieve proxies from.
+
+## Dependencies
+
+This script requires the following dependencies to be installed:
+
+- `requests`
+- `schedule`
+
+You can install these dependencies using `pip` by running:
+`pip install requests schedule` or `pip install -r requirements.txt`
+
+## Usage
+
+To use this script, run it from the command line with any desired arguments. For example, to retrieve and check SOCKS5 proxies with a maximum of 200 proxies in memory and a checker timeout of 5 seconds, you could run:
+`python3 proxy.py -type socks5 -m 200 -t 3`
+
+
+Where `proxy.py` is the name of this script file. The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C). While running, it will periodically retrieve, check, and track proxies, updating the `checked_proxies.txt` and `top10.txt` files as needed.
+
+## Output Files
+
+The script generates two output files:
+
+- `checked_proxies.txt`: This file contains a list of available proxies, sorted by response time. Each line of the file contains one proxy in the format `IP:PORT`.
+- `top10.txt`: This file contains a list of the top 10 proxies by continuous availability time. Each line of the file contains one proxy in the format `IP:PORT`.
+
+These files can be used to obtain a list of available and reliable proxies for use in other applications.
+
+## Troubleshooting
+
+If you encounter any issues while running this script, try checking the following:
+
+- Make sure that all dependencies are installed and up-to-date.
+- Check that you have specified valid values for any command-line arguments.
+- If you are using a custom API URL to retrieve proxies, make sure that it is correctly formatted and returns a valid list of proxies.
+
+## Limitations
+
+The accuracy of the proxy availability checks may vary depending on network conditions and other factors. Proxies that are reported as available may not always be accessible or reliable.
+
+## License
+
+This script is distributed under the MIT license. 
