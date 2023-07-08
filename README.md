@@ -19,8 +19,8 @@ You can install these dependencies using `pip` by running:
 - `proxy.py [-h] [-l ] [-p ] [-t ] [-w ]
                 [-type {http,https,socks4,socks5}] [--top] [-url "URL"]`
 
-- The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C). 
-- While running, it will periodically retrieve, check, and track proxies, updating the `checked_proxies.txt` and `top10.txt` files as needed.
+The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C). 
+While running, it will periodically retrieve, check, and track proxies, updating the `checked_proxies.txt` and `top10.txt` files as needed.
 
 
 
