@@ -34,7 +34,7 @@ options:
 - `  -type {http,https,socks4,socks5}
                         type of proxies to retrieve and check (default=http)`                    
 - `  --top                 If specified, store top 10 proxies in file`
-- `  -url URL              custom "URL" of the API to retrieve proxies from`
+- `  -url 'URL'            custom "URL" of the API to retrieve proxies from`
 
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/image/demo1.png)
