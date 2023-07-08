@@ -27,7 +27,7 @@ if args.url:
 else:
     api_url = f"https://api.proxyscrape.com/v2/?request=displayproxies&protocol={args.type}&timeout={args.p}&country=all&ssl=all&anonymity=all"
 
-max = 400 #max proxies in memory
+max = 1000 #max proxies in memory
 workers = args.w
 
 proxies = set()
