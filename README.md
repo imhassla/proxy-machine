@@ -30,18 +30,18 @@ options:
   
 - `  -l                    maximum proxies stored in checked_proxies.txt (default=100)`
   
-  -p                    max ping (ms.) of the proxy servers (default=300)
+- `  -p                    max ping (ms.) of the proxy servers (default=300)`
                         
-  -t                    timeout (s.) of checker (default=3)
+- `  -t                    timeout (s.) of checker (default=3)`
   
-  -w                    number of worker threads to use when checking proxies (default=50)
+- `  -w                    number of worker threads to use when checking proxies (default=50)`
   
-  -type {http,https,socks4,socks5}
-                        type of proxies to retrieve and check (default=http)
+- `  -type {http,https,socks4,socks5}
+                        type of proxies to retrieve and check (default=http)`
                         
-  --top                 If specified, store top 10 proxies in file
+- `  --top                 If specified, store top 10 proxies in file`
   
-  -url URL              custom "URL" of the API to retrieve proxies from
+- `  -url URL              custom "URL" of the API to retrieve proxies from`
 
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/image/demo1.png)
