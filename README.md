@@ -20,10 +20,9 @@ To use this script, run it from the command line with any desired arguments. For
 
 Where `proxy.py` is the name of this script file. The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C). While running, it will periodically retrieve, check, and track proxies, updating the `checked_proxies.txt` and `top10.txt` files as needed.
 
-proxy.py [-h] [-l ] [-p ] [-t ] [-w ]
-                [-type {http,https,socks4,socks5}] [--top] [-url "URL"]
+- `proxy.py [-h] [-l ] [-p ] [-t ] [-w ]
+                [-type {http,https,socks4,socks5}] [--top] [-url "URL"]`
 
-The script retrieve and check http, https, socks4 and socks5 proxies
 
 options:
 - `  -h, --help            show this help message and exit`
