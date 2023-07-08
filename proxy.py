@@ -40,8 +40,8 @@ for i in txt:
     time.sleep(0.01)
     print(i, end='', flush=True)
 # Create the checked proxies and top 10 files if they do not exist.
-if not os.path.exists(checked_filename):
-    open(checked_filename, "w").close()
+
+open(checked_filename, "w+").close()
 
 def get_proxies():
     # Check if the number of records in the checked_filename file exceeds 100
