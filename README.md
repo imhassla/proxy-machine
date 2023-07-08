@@ -18,8 +18,7 @@ You can install these dependencies using `pip` by running:
 - `git clone https://github.com/imhassla/proxy-machine.git`
 - `cd proxy-machine`
 - `pip install -r requirements.txt`
-- `proxy.py [-h] [-l ] [-p ] [-t ] [-w ]
-                [-type {http,https,socks4,socks5}] [--top] [-url "URL"]`
+- `python3 proxy.py` will run script with all defaul argumets to retrieve and check http proxy
 
 The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C). 
 
