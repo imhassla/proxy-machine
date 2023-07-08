@@ -14,9 +14,9 @@ You can install these dependencies using `pip` by running:
 - `pip install -r requirements.txt`
 
 ## Usage
-`git clone https://github.com/imhassla/proxy-machine.git`
-`cd proxy-machine`
-  `proxy.py [-h] [-l ] [-p ] [-t ] [-w ]
+-`git clone https://github.com/imhassla/proxy-machine.git`
+-`cd proxy-machine`
+-  `proxy.py [-h] [-l ] [-p ] [-t ] [-w ]
                 [-type {http,https,socks4,socks5}] [--top] [-url "URL"]`
 
 To use this script, run it from the command line with any desired arguments. For example, to retrieve and check SOCKS5 proxies with a maximum of 200 proxies in memory and a checker timeout of 5 seconds, you could run:
