@@ -14,6 +14,8 @@ You can install these dependencies using `pip` by running:
 - `pip install -r requirements.txt`
 
 ## Usage
+`git clone https://github.com/imhassla/proxy-machine.git`
+`cd proxy-machine`
   `proxy.py [-h] [-l ] [-p ] [-t ] [-w ]
                 [-type {http,https,socks4,socks5}] [--top] [-url "URL"]`
 
