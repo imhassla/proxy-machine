@@ -10,7 +10,7 @@ This script requires the following dependencies to be installed:
 - `schedule`
 
 You can install these dependencies using `pip` by running:
-`pip install requests schedule` or `pip install -r requirements.txt`
+`pip install requests schedule` or \n `pip install -r requirements.txt`
 
 ## Usage
 
