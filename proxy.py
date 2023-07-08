@@ -8,7 +8,7 @@ import logging
 import argparse
 
 parser = argparse.ArgumentParser(description='The script retrieve and check http, https, socks4 and socks5 proxies')
-parser.add_argument('-l', type=int, default=100, help='maximum proxies stored in checked_proxies.txt')
+parser.add_argument('-l', type=int, default=100, help='limit of proxies stored in checked_proxies.txt')
 parser.add_argument('-p', type=int, default=300, help='ping (ms.) of the proxy server. (for default providers only)')
 parser.add_argument('-t', type=int, default=3, help='timeout (s.) of checker')
 parser.add_argument('-w', type=int, default=50, help='number of worker threads to use when checking proxies')
