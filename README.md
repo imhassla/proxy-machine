@@ -2,6 +2,8 @@
 
 This script retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies. 
 
+The availability of all proxies is checked using a GET request to https://httpbin.org/ip. Only those proxies that do not reveal the current external address of the system where the proxy checker is running are marked as available and alive
+
 It can be run from the command line with several optional arguments to specify the requred ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, and the URL of the API to retrieve proxies from.
 
 ## Dependencies
