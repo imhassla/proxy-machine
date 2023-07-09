@@ -2,13 +2,13 @@ import requests
 import schedule
 import time
 import os
-from threading import Lock
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import argparse
 import json
 import socks
 import socket
+from threading import Lock
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 
 parser = argparse.ArgumentParser(description='The script retrieve and check http, https, socks4 and socks5 proxies')
