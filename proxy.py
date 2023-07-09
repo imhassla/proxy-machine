@@ -1,4 +1,3 @@
-import imp
 import requests
 import schedule
 import time
@@ -10,11 +9,6 @@ import argparse
 import json
 import socks
 import socket
-import http.client
-from http.client import HTTPSConnection, HTTPConnection
-from urllib.parse import urlparse
-import python_socks 
-import urllib
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 
 parser = argparse.ArgumentParser(description='The script retrieve and check http, https, socks4 and socks5 proxies')
@@ -125,7 +119,7 @@ def get_proxies():
             proxies.update(new_proxies - proxies)
     except requests.exceptions.RequestException as e:
         # Log any errors that occur while retrieving proxies from the API.
-        logging.error(f"An error occurred while getting proxies: {e}")
+        #logging.error(f"An error occurred while getting proxies: {e}")
 
     # Retrieve a list of proxies from the additional sources.
     additional_sources = [
@@ -141,7 +135,7 @@ def get_proxies():
                 proxies.update(new_proxies - proxies)
         except requests.exceptions.RequestException as e:
             # Log any errors that occur while retrieving proxies from the additional sources.
-            logging.error(f"An error occurred while getting proxies from {source}: {e}")
+            #logging.error(f"An error occurred while getting proxies from {source}: {e}")
 
 def check_proxies():
     # Check all known proxies for availability.
