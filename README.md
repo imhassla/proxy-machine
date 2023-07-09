@@ -32,7 +32,7 @@ options:
 - `  -p `                   max ping (ms.) of the proxy servers`                        
 - `  -t `                   timeout (s.) of checker`  
 - `  -w `                   number of worker threads to use when checking proxies
-- `  -type {http,https,socks4,socks5}`
+- ` -type {http,https,socks4,socks5}`
                         type of proxies to retrieve and check (default=http)                    
 - `  --top `                If specified, store top 10 proxies in file
 - `  -url 'URL' `           custom "URL" of the API to retrieve proxies from
