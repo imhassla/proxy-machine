@@ -52,7 +52,6 @@ for i in txt:
 def check_proxy(proxy):
     # Check if a proxy is available by sending a GET request to https://httpbin.org/ip.
     try:
-        start_time = time.time()
         proxy_host, proxy_port = proxy.split(':')       
         proxies = None
         if proxy_type == 'http':
@@ -80,7 +79,7 @@ def check_proxy(proxy):
             data = r.json()
             if proxy.split(':')[0] in data.get('origin').split(', '):
                 # If one of the IP addresses in the response matches the proxy IP, return its response time.
-                response_time = time.time() - start_time
+                response_time = r.elapsed.total_seconds()
                 return (proxy, response_time)
     except (Exception) as e:
         #print(f'Error: {e}')  #for debug
