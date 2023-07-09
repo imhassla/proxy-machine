@@ -38,7 +38,7 @@ options:
 - `  -url 'URL' `           custom "URL" of the API to retrieve proxies from
 
 
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/demo1.png)
+![alt text](https://github.com/imhassla/proxy-machine/blob/main/demo.png)
 
 ## Output Files
 
