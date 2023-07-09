@@ -2,6 +2,7 @@ import requests
 import schedule
 import time
 import os
+import bs4
 import logging
 import argparse
 import json
@@ -40,7 +41,10 @@ file_lock = Lock()
 proxy_stats = {}
 proxy_type = args.type
 proxy_absence_count = {}
-
+s = requests.get('https://2ip.ua/ru/')
+b = bs4.BeautifulSoup(s.text, "html.parser")
+sip = b.select(" .ipblockgradient .ip")[0].getText()
+sip = sip.strip()
 open(checked_filename, "w+").close()
 
 txt = '\033[1;36mGetting data from sources and primary proxy checks. \nStatistics will be displayed soon...\033[0m'
@@ -50,10 +54,11 @@ for i in txt:
 # Create the checked proxies and top 10 files if they do not exist.
 
 def check_proxy(proxy):
+    proxies = {}
+    
     # Check if a proxy is available by sending a GET request to https://httpbin.org/ip.
     try:
         proxy_host, proxy_port = proxy.split(':')       
-        proxies = None
         if proxy_type == 'http':
             proxies = {
                 'http': f'http://{proxy_host}:{proxy_port}',
@@ -73,16 +78,17 @@ def check_proxy(proxy):
         
         url = 'https://httpbin.org/ip'
         r = requests.get(url, proxies=proxies, timeout=args.t)
-        
+      
         if r.status_code == 200:
             # If the proxy is available, check if the response contains the proxy IP.
             data = r.json()
-            if proxy.split(':')[0] in data.get('origin').split(', '):
+            if data.get('origin') != sip:
                 # If one of the IP addresses in the response matches the proxy IP, return its response time.
                 response_time = r.elapsed.total_seconds()
                 return (proxy, response_time)
     except (Exception) as e:
         #print(f'Error: {e}')  #for debug
+        socks.set_default_proxy()
         pass
     return None
 
@@ -106,7 +112,11 @@ def check_proxy(proxy):
  """
 
 def get_proxies():
+    socks.set_default_proxy()
     # Check if the number of records in the checked_filename file exceeds 100
+    if len(proxies) >= max:
+        with file_lock:
+            proxies.clear()
     with open(checked_filename, 'r') as f:
         if len(f.readlines()) > args.l:
             return
@@ -118,7 +128,7 @@ def get_proxies():
             proxies.update(new_proxies - proxies)
     except requests.exceptions.RequestException as e:
         # Log any errors that occur while retrieving proxies from the API.
-        #logging.error(f"An error occurred while getting proxies: {e}")
+        logging.error(f"An error occurred while getting proxies: {e}")
         pass
 
     # Retrieve a list of proxies from the additional sources.
@@ -135,7 +145,7 @@ def get_proxies():
                 proxies.update(new_proxies - proxies)
         except requests.exceptions.RequestException as e:
             # Log any errors that occur while retrieving proxies from the additional sources.
-            #logging.error(f"An error occurred while getting proxies from {source}: {e}")
+            logging.error(f"An error occurred while getting proxies from {source}: {e}")
             pass
 
 def check_proxies():
@@ -169,9 +179,7 @@ def check_proxies():
             f.write(proxy + "\n")
 
     # Clear the set of retrieved proxies if it has reached the maximum size.
-    if len(proxies) >= max:
-        with file_lock:
-            proxies.clear()
+    
 
 def track_proxies():
     # Track the top 10 proxies by continuous availability time.
@@ -211,7 +219,7 @@ def track_proxies():
     os.system('cls' if os.name == 'nt' else 'clear')
 
     # Display the number of proxies in checked_filename and in the proxies set.
-    #print(f"proxies in memory:\033[1m\033[31m {len(proxies)}\033[0m")        #for debug
+    print(f"proxies in memory:\033[1m\033[31m {len(proxies)}\033[0m")        #for debug
     print(f"proxies in {checked_filename}: \033[1m\033[32m {len(checked_proxies)}\033[0m\n")
 
     # Print the top 10 proxies to the console.
