@@ -120,6 +120,7 @@ def get_proxies():
     except requests.exceptions.RequestException as e:
         # Log any errors that occur while retrieving proxies from the API.
         #logging.error(f"An error occurred while getting proxies: {e}")
+        pass
 
     # Retrieve a list of proxies from the additional sources.
     additional_sources = [
@@ -136,6 +137,7 @@ def get_proxies():
         except requests.exceptions.RequestException as e:
             # Log any errors that occur while retrieving proxies from the additional sources.
             #logging.error(f"An error occurred while getting proxies from {source}: {e}")
+            pass
 
 def check_proxies():
     # Check all known proxies for availability.
