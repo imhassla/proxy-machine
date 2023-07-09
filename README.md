@@ -27,7 +27,7 @@ While running, it will periodically retrieve, check, and track proxies, updating
 
 
 options:
-- `  -h, --help `           show this help message and exit 
+- `  -h, --help `           show help message 
 - `  -l `                   limit of proxies stored in checked_proxies.txt 
 - `  -p `                   max ping (ms.) of the proxy servers`                        
 - `  -t `                   timeout (s.) of checker`  
@@ -36,7 +36,6 @@ options:
                         type of proxies to retrieve and check (default=http)                    
 - `  --top `                If specified, store top 10 proxies in file
 - `  -url 'URL' `           custom "URL" of the API to retrieve proxies from
-
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/demo.png)
 
