@@ -10,13 +10,10 @@ It can be run from the command line with several optional arguments to specify t
 
 ## Dependencies
 
-This script requires the following dependencies to be installed:
-
-- `requests`
-- `schedule`
-
-You can install these dependencies using `pip` by running:
-- `pip install requests schedule` 
+Install python3 and python3-pip
+- `sudo apt update`
+- `sudo apt install python3`
+- `sudo apt install python3-pip`
 
 ## Usage
 - `git clone https://github.com/imhassla/proxy-machine.git`
@@ -27,8 +24,6 @@ You can install these dependencies using `pip` by running:
 The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C). 
 
 While running, it will periodically retrieve, check, and track proxies, updating the `checked_proxies.txt` and `top10.txt` files as needed.
-
-
 
 options:
 - `  -h, --help `           show help message 
