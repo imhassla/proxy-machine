@@ -8,14 +8,13 @@ Only those proxies that do not reveal the current external address of the system
 
 It can be run from the command line with several optional arguments to specify the requred ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, and the URL of the API to retrieve proxies from.
 
-## Dependencies
-
-Install python3 and python3-pip
+## Usage
+Install python3 and python3-pip:
 - `sudo apt update`
 - `sudo apt install python3`
 - `sudo apt install python3-pip`
-
-## Usage
+  
+Clone repo and install dependencies:
 - `git clone https://github.com/imhassla/proxy-machine.git`
 - `cd proxy-machine`
 - `pip install -r requirements.txt`
