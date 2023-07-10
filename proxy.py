@@ -104,6 +104,7 @@ def check_proxy(proxy):
                 return (proxy, response_time)
     except (Exception) as e:
         # If an error occurs, reset the default proxy settings and continue.
+        #print(f'Error: {e}') #for debug
         socks.set_default_proxy()
         pass
     # If the proxy check was not successful, return None.
