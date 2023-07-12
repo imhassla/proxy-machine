@@ -16,10 +16,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Check for correct number of arguments
 parser = argparse.ArgumentParser(description='Scan open ports socks4 proxies')
-parser.add_argument('-w', type=int, default=50, help='number of worker threads to use when checking proxies')
+parser.add_argument('-w', type=int, default=25, help='number of worker threads to use when checking proxies')
 parser.add_argument('-port', nargs='+', type=int, help='list of ports to use')
 parser.add_argument('-range', nargs='+', type=str, help='list of IP address ranges in the format 1.1.1.1-2.2.2.2 or CIDR 1.1.1.0/24')
-parser.add_argument('-machine', action='store_true', help='when runs from proxy-machine scrypt(dont start proxy_subprocess)')
+parser.add_argument('-machine', action='store_true', help='when runs from proxy-machine scrypt (or proxy.py subprocess already running)')
 args = parser.parse_args()
 num_threads = args.w
 
