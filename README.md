@@ -27,8 +27,8 @@ While running, it will periodically retrieve, check, and track proxies, updating
 options:
 - `  -h, --help `           show help message 
 - `  -l `                   limit of proxies stored in checked_proxies.txt 
-- `  -p `                   max ping (ms.) of the proxy servers`                        
-- `  -t `                   timeout (s.) of checker`  
+- `  -p `                   max ping (ms.) of the proxy servers                        
+- `  -t `                   timeout (s.) of checker  
 - `  -w `                   number of worker threads to use when checking proxies
 - ` -type {http,https,socks4,socks5}`
                         type of proxies to retrieve and check (default=http)                    
