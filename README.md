@@ -35,7 +35,7 @@ options:
 - `  --top `                If specified, store top 10 proxies in file
 - `  -url 'URL' `           custom "URL" of the API to retrieve proxies from
 
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/demo.png)
+![alt text](https://github.com/imhassla/proxy-machine/blob/main/demo_machine.png)
 
 ## Output Files
 
