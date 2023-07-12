@@ -7,7 +7,6 @@ import random
 import logging
 import requests
 import argparse
-import telnetlib
 import subprocess
 import concurrent.futures
 from datetime import datetime
