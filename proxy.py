@@ -1,5 +1,7 @@
 import requests
 import schedule
+import subprocess
+import threading
 import time
 import os
 import bs4
@@ -10,16 +12,19 @@ import socks
 import socket
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
-parser.add_argument('-l', type=int, default=50, help='limit of proxies stored in checked_proxies.txt')
-parser.add_argument('-p', type=int, default=800, help='ping (ms.) of the proxy server. (for default providers only)')
+parser.add_argument('-l', type=int, default=70, help='limit of proxies stored in checked_proxies.txt')
+parser.add_argument('-p', type=int, default=1000, help='ping (ms.) of the proxy server. (for default providers only)')
 parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
-parser.add_argument('-w', type=int, default=50, help='number of worker threads to use when checking proxies')
-parser.add_argument('-type', type=str, default='http', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
-parser.add_argument('--top', action='store_true', help='If specified, store top 10 proxies in file')
+parser.add_argument('-w', type=int, default=30, help='number of worker threads to use when checking proxies')
+parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
+parser.add_argument('-top', action='store_true', help='If specified, store top 10 proxies in file')
+parser.add_argument('-scan', action='store_true', help='If specified, perform scan.py for checked proxies ip ranges.')
+
 parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies from')
 args = parser.parse_args()
 
@@ -51,6 +56,7 @@ file_lock = Lock()
 proxy_stats = {}
 proxy_type = args.type
 proxy_absence_count = {}
+process = None
 
 # Get the user's IP address by making a request to 2ip.ua and parsing the response using Beautiful Soup
 selfip = requests.get('https://2ip.ua/ru/')
@@ -130,7 +136,7 @@ def get_proxies():
             # Update the set of proxies in memory with any new proxies that were not already in the set.
             proxies.update(new_proxies - proxies)
     except requests.exceptions.RequestException as e:
-        logging.error(f"An error occurred while getting proxies: {e}")
+        #logging.error(f"An error occurred while getting proxies: {e}")
         pass
 
     # Define additional sources for retrieving proxies.
@@ -147,7 +153,7 @@ def get_proxies():
                 # Update the set of proxies in memory with any new proxies that were not already in the set.
                 proxies.update(new_proxies - proxies)
         except requests.exceptions.RequestException as e:
-            logging.error(f"An error occurred while getting proxies from {source}: {e}")
+            #logging.error(f"An error occurred while getting proxies from {source}: {e}")
             pass
 
 # Define a function to check all of the proxies in memory and in the checked_proxies.txt file using multiple worker threads.
@@ -242,13 +248,91 @@ def track_proxies():
         with open(top10_filename, "w") as f:
             f.write(file_output_str)
 
+
+def get_ip_ranges():
+    with open(checked_filename, 'r') as f:
+        data = f.read().splitlines()
+    ip_ranges = set()
+    ports = set()
+    for line in data:
+        ip, port = line.split(':')
+        ip_range = '.'.join(ip.split('.')[:-1]) + '.0/24'
+        ip_ranges.add(ip_range)
+        ports.add(port)
+    return ip_ranges, ports
+
+semaphore = threading.Semaphore(1)
+
+def run_scan(ip_range, ports):
+    # Acquire the semaphore before starting the scan
+    semaphore.acquire()
+    try:
+        # Convert the list of ports to a list of strings
+        ports_str = [str(port) for port in ports]
+        
+        # Start the scan.py script as a subprocess
+        process = subprocess.Popen(
+            ['python3', 'scan.py', '-ping', '-machine', '-range', ip_range, '-port', *ports_str],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        
+        try:
+            # Wait for the subprocess to finish
+            process.wait()
+        except KeyboardInterrupt:
+            # Terminate the subprocess if Ctrl-C is pressed
+            process.terminate()
+            # Wait for the subprocess to terminate
+            process.wait()
+            # Re-raise the KeyboardInterrupt exception
+            raise
+    finally:
+        # Release the semaphore when the scan is finished
+        semaphore.release()
+
+def scan_ip_ranges():
+    # Keep running indefinitely
+    while True:
+        # Get the list of IP ranges and ports
+        ip_ranges, ports = get_ip_ranges()
+        
+        # Convert the set of ports to a list
+        ports = list(ports)
+        
+        # Keep track of the scanned IP ranges
+        scanned_ip_ranges = set()
+        
+        # Check if ip_ranges or ports are empty
+        while not ip_ranges or not ports:
+            # Retry getting the list of IP ranges and ports
+            ip_ranges, ports = get_ip_ranges()
+            time.sleep(5)
+        
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            while ip_ranges:
+                # Submit a task to the executor for each IP range
+                for ip_range in ip_ranges:
+                    if ip_range not in scanned_ip_ranges:
+                        executor.submit(run_scan, ip_range, ports)
+                        scanned_ip_ranges.add(ip_range)
+                
+                # Get the updated list of IP ranges
+                ip_ranges, ports = get_ip_ranges()
+
+
+if args.scan:
+        scan_thread = threading.Thread(target=scan_ip_ranges)
+        scan_thread.start()
+
+
 # Define the main function to run when the script is executed.
 if __name__ == "__main__":
     # Schedule the get_proxies, check_proxies, and track_proxies functions to run at regular intervals using the schedule library.
     schedule.every(14).seconds.do(get_proxies)
     schedule.every(20).seconds.do(check_proxies)
     schedule.every(10).seconds.do(track_proxies)
-
+    
     try:
         # Continuously run scheduled tasks until interrupted by a keyboard interrupt (Ctrl-C).
         while True:

@@ -13,13 +13,14 @@ import ipaddress
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
 # Check for correct number of arguments
 parser = argparse.ArgumentParser(description='Scan open ports socks4 proxies')
 parser.add_argument('-w', type=int, default=25, help='number of worker threads to use when checking proxies')
+parser.add_argument('-t', type=int, default=5, help='timeout (s.) of socket')
 parser.add_argument('-port', nargs='+', type=int, help='list of ports to use')
+parser.add_argument('-ping', action='store_true', help='ping "1.1.1.1" before every connetcion try to enshure that network connection is availble )')
 parser.add_argument('-range', nargs='+', type=str, help='list of IP address ranges in the format 1.1.1.1-2.2.2.2 or CIDR 1.1.1.0/24')
-parser.add_argument('-machine', action='store_true', help='when runs from proxy-machine scrypt (or proxy.py subprocess already running)')
+parser.add_argument('-machine', action='store_true', help='when runs from proxy-machine scrypt(or proxy.py subprocess already running)')
 args = parser.parse_args()
 num_threads = args.w
 
@@ -48,11 +49,41 @@ with open(filename, "w+") as f:
 def get_random_proxy():
     with open('checked_proxies.txt', 'r') as f:
         proxies = f.readlines()
-    if proxies:
-        return random.choice(proxies).strip()
+    if len(proxies) >= 3:
+        top_third = proxies[:len(proxies)//3]
+        return random.choice(top_third).strip()
     time.sleep(3)
     return None
-    
+
+class Ping:
+    def __init__(self, host):
+        self.host = host
+        self.response_time = None
+        self.is_running = True
+        thread = threading.Thread(target=self.run, args=())
+        thread.daemon = True
+        thread.start()
+
+    def run(self):
+        while self.is_running:
+            try:
+                output = subprocess.check_output(['ping', '-c', '1', self.host])
+                lines = output.splitlines()
+                for line in lines:
+                    if 'time' in line.decode('utf-8'):
+                        resptime = float(line.decode('utf-8').split('time=')[1].split(' ')[0])
+                        self.response_time = resptime
+            except subprocess.CalledProcessError:
+                self.response_time = False
+            time.sleep(1)
+
+    def get_response_time(self):
+        return self.response_time
+
+    def stop(self):
+        self.is_running = None
+if args.ping:
+    pinger = Ping('1.1.1.1')
 
 def get_ip_ranges():
     ips = []
@@ -97,19 +128,21 @@ def scan(host, port):
                 time.sleep(7)
                 print(" " * 40, end="\r")
                 continue
-            ip_pool = ["8.8.8.8", "1.1.1.1", "8.8.4.4"]
-            random_ip = random.choice(ip_pool)
-            response = subprocess.run(["ping", "-c", "1", random_ip], stdout=subprocess.DEVNULL)
-            if response.returncode != 0:
-                print(" No internet connection, waiting...", end="\r")
-                time.sleep(8)
-                print(" " * 40, end="\r")
-                continue
-            print(" Scan in progress...", end="\r")
+            if args.ping:
+                response_time = pinger.get_response_time()
+                if response_time == None:
+                    print(" Weak internet connection, waiting...", end="\r")
+                    time.sleep(5)
+                    print(" " * 40, end="\r")
+                    continue
+            if args.ping:
+                print(" Scan in progress... ping:",response_time, 'ms.', end="\r")
+            else:
+                print(" Scan in progress... (use '-ping' agrument to check connetction latency)", end="\r")
             proxy_host, proxy_port = proxy.split(':')
             sock = socks.socksocket()
             socks.set_default_proxy(socks.SOCKS4, proxy_host, int(proxy_port))
-            sock.settimeout(5)
+            sock.settimeout(args.t)
             try:
                 sock.connect((host, port))
                 sock.shutdown(2)
@@ -122,6 +155,8 @@ def scan(host, port):
 
 def scan_ips(max_threads=num_threads):
     try:
+        # Create a flag to keep track of whether any data was written to the file
+        data_written = False  
         ips = get_ip_ranges()
         scanned = set()
         with ThreadPoolExecutor(max_workers=max_threads) as executor:
@@ -134,10 +169,16 @@ def scan_ips(max_threads=num_threads):
             for future in as_completed(futures):
                 proxy, host, port, result = future.result()
                 if result == True:
-                    print(f'{host}:{port} is open. Scaned with Proxy {proxy}')
+                    print(f'{host}:{port} is open. Scanned with Proxy {proxy}')
                     with open(filename, "a") as f:
-                        f.write(f"{host}:{port}\n")
-                sys.stdout.flush()           
+                        f.write(f"{host}:{port}\n")             
+                    # Set the data_written flag to True
+                    data_written = True               
+                sys.stdout.flush()       
+        # Check if any data was written to the file
+        if not data_written:
+            # Delete the file if no data was written
+            os.remove(filename)
     except KeyboardInterrupt:
         print("\nExiting...")
         sys.exit(0)
