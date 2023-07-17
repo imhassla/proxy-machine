@@ -135,10 +135,6 @@ def scan(host, port):
                     time.sleep(5)
                     print(" " * 40, end="\r")
                     continue
-            if args.ping:
-                print(" Scan in progress... ping:",response_time, 'ms.', end="\r")
-            else:
-                print(" Scan in progress... (use '-ping' agrument to check connetction latency)", end="\r")
             proxy_host, proxy_port = proxy.split(':')
             sock = socks.socksocket()
             socks.set_default_proxy(socks.SOCKS4, proxy_host, int(proxy_port))
