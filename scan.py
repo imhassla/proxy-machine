@@ -9,7 +9,6 @@ import argparse
 import datetime
 import ipaddress
 import threading
-import ipaddress
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -70,8 +69,9 @@ class Ping:
                 output = subprocess.check_output(['ping', '-c', '1', self.host])
                 lines = output.splitlines()
                 for line in lines:
-                    if 'time' in line.decode('utf-8'):
+                    if 'time=' in line.decode('utf-8'):
                         resptime = float(line.decode('utf-8').split('time=')[1].split(' ')[0])
+
                         self.response_time = resptime
             except subprocess.CalledProcessError:
                 self.response_time = False
