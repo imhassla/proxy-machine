@@ -1,10 +1,10 @@
 # Proxy Machine
 
-proxy.py - retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies.
+- proxy.py - retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies.
 
-scan.py - performs port scaning with socks4 socket using founded proxies.
+- scan.py - performs port scaning with socks4 socket using founded proxies.
 
-checker.py - checks all types of proxies from scan_results or custom API '-url'
+- checker.py - checks all types of proxies from scan_results or custom API '-url'
 
 
 The availability of all proxies is checked using a GET request to https://httpbin.org/ip. 
