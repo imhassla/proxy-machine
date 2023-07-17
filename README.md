@@ -50,15 +50,6 @@ options:
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_checker.png)
 
-## Output Files
-
-The script generates two output files:
-
-- `checked_proxies.txt`: This file contains a list of available proxies, sorted by response time. Each line of the file contains one proxy in the format `IP:PORT`.
-- `top10.txt`: (if arg. `--top` specified). This file contains a list of the top 10 proxies by continuous availability time. Each line of the file contains one proxy in the format `IP:PORT`.
-
-These files can be used to obtain a list of available and reliable proxies for use in other applications.
-
 ## Troubleshooting
 
 If you encounter any issues while running this script, try checking the following:
