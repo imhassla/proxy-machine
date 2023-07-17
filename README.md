@@ -6,6 +6,7 @@ scan.py - performs port scaning with socks4 socket using founded proxies.
 
 checker.py - checks all types or selected type of proxy from scan_results or custom API '-url'
 
+
 The availability of all proxies is checked using a GET request to https://httpbin.org/ip. 
 
 Only those proxies that do not reveal the current external address of the system where the proxy checker is running are marked as available and alive.
