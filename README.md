@@ -45,8 +45,8 @@ options:
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_scan.png)
 
-- `python3 checker.py -ping` try to chech all uniq scan results ip:port combinations as HTTP, HTTPS, SOCKS4, and SOCKS5 proxy, print results and store log in checher_results folder.
-- `python3 checker.py -ping -url 'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=all&timeout=300'` trys to check API source list as all types of proxies, print results and store log in checher_results folder.
+- `python3 checker.py -ping` chech all uniq scan results ip:port combinations as HTTP, HTTPS, SOCKS4, and SOCKS5 proxy, print results and store log in checher_results folder.
+- `python3 checker.py -ping -url 'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=all&timeout=300'` check API source list as all types of proxies, print results and store log in checher_results folder.
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_checker.png)
 
