@@ -22,22 +22,20 @@ Clone repo and install dependencies:
 - `pip install -r requirements.txt`
 
 ## Usage
-- `python3 proxy.py -type http` will run script with all defaul argumets to retrieve and check http proxy
+- `python3 proxy.py -type http` to retrieve and check http proxy
 
 The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C). 
 
-While running, it will periodically retrieve, check, and track proxies, updating the `checked_proxies.txt` and `top10.txt` files as needed.
+While running, it will periodically retrieve, check, and track proxies, updating the `checked_proxies.txt` 
 
-options:
+main options:
 - `  -h, --help `           show help message 
-- `  -l `                   limit of proxies stored in checked_proxies.txt 
-- `  -p `                   max ping (ms.) of the proxy servers                        
+- `  -l `                   limit of proxies stored in checked_proxies.txt                       
 - `  -t `                   timeout (s.) of checker  
-- `  -w `                   number of worker threads to use when checking proxies
-- ` -type {http,https,socks4,socks5}`
-                        type of proxies to retrieve and check (default=http)                    
-- `  --top `                If specified, store top 10 proxies in file
+- `  -w `                   number of worker threads to use when checking proxies                  
 - `  -url 'URL' `           custom "URL" of the API to retrieve proxies from
+- ` -type {http,https,socks4,socks5}`
+type of proxies to retrieve and check (default=http)  
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_machine.png)
 
