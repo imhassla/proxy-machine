@@ -172,10 +172,11 @@ def check_proxies():
     # Use a ThreadPoolExecutor to check all of the known proxies concurrently using multiple worker threads.
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {}
+        results = []
         for proxy in all_proxies:
             future = executor.submit(check_proxy, proxy)
             futures[future] = proxy
-        results = []
+        
         for future in as_completed(futures):
             result = future.result()
             if result is not None:
