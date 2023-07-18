@@ -163,10 +163,7 @@ def get_proxies():
 
 # Define a function to check all of the proxies in memory and in the checked_proxies.txt file using multiple worker threads.
 def check_proxies():
-    conn = sqlite3.connect('proxies.db')
-    c = conn.cursor()
-    c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
-    c.execute('BEGIN')
+
     # Read the checked_proxies.txt file and combine its contents with the set of proxies in memory to create a set of all known proxies.
     with open(checked_filename, "r") as f:
         checked_proxies = set(f.read().splitlines())
@@ -192,6 +189,10 @@ def check_proxies():
                 # If a proxy check was not successful, remove it from the set of proxies in memory.
                 proxies.discard(proxy)
     if results:
+        conn = sqlite3.connect('proxies.db')
+        c = conn.cursor()
+        c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+        c.execute('BEGIN')
         c.executemany(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', results)
         c.execute('COMMIT')
         conn.close()

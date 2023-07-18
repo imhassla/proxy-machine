@@ -148,9 +148,7 @@ def scan(host, port):
             continue
 
 def scan_ips(max_threads=num_threads):
-    conn = sqlite3.connect('proxies.db')
-    c = conn.cursor()
-    c.execute(f'''CREATE TABLE IF NOT EXISTS {'for_checker'} (proxy TEXT PRIMARY KEY)''')
+
     try:
         # Create a flag to keep track of whether any data was written to the file
         ips = get_ip_ranges()
@@ -172,6 +170,9 @@ def scan_ips(max_threads=num_threads):
              
                 sys.stdout.flush()    
         if data_to_write:
+            conn = sqlite3.connect('proxies.db')
+            c = conn.cursor()
+            c.execute(f'''CREATE TABLE IF NOT EXISTS {'for_checker'} (proxy TEXT PRIMARY KEY)''')
             # Begin a transaction
             c.execute('BEGIN')
 
@@ -181,7 +182,7 @@ def scan_ips(max_threads=num_threads):
             # Commit the transaction
             c.execute('COMMIT')
             data_to_write = []
-        conn.close()
+            conn.close()
 
         # Check if any data was written to the file
 
