@@ -176,7 +176,7 @@ def scan_ips(max_threads=num_threads):
             c.execute('BEGIN')
 
             # Write data to the database
-            c.executemany(f'''INSERT OR REPLACE INTO for_checker (proxy) VALUES (?)''', (f"{host}:{port}",))
+            c.executemany(f'''INSERT OR REPLACE INTO for_checker (proxy) VALUES (?)''', data_to_write)
 
             # Commit the transaction
             c.execute('COMMIT')
