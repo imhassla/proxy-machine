@@ -4,6 +4,7 @@ import time
 import socks
 import socket
 import random
+import sqlite3
 import logging
 import requests
 import argparse
@@ -27,10 +28,18 @@ reset_color = '\033[0m'
 parser = argparse.ArgumentParser(description='The script checks uniq ip:port combinations from scan_results/ directory as http, https, socks4, socks5 proxies. ')
 parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies from. Only ip:port format supported')
 parser.add_argument('-ping', action='store_true', help='ping "1.1.1.1" before check to enshure that network connection is availble )')
+parser.add_argument('-db', action='store_true', help='recheck all proxies in db')
+parser.add_argument('-clean', action='store_true', help='clean old unavailible proxies in db')
+parser.add_argument('-scan', action='store_true', help='check scan results and clear "scan_results" table in db')
+
 parser.add_argument('-type', type=str, default= None, choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-w', type=int, default=15, help='number of worker threads to use when checking proxies')
-parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
+parser.add_argument('-t', type=int, default=7, help='timeout (s.) of checker')
 args = parser.parse_args()
+
+os.system('ulimit -n 4000')
+
+
 
 if args.type:
     proxy_types = args.type
@@ -82,6 +91,7 @@ while True:
 os.system('cls' if os.name == 'nt' else 'clear')
 
 def check_proxy(proxy, proxy_type):
+
     while True:
         # Initialize an empty dictionary to store the proxy settings for HTTP and HTTPS requests.
         proxies = {}
@@ -131,54 +141,108 @@ def check_proxy(proxy, proxy_type):
             else:
                 print(" Proxy Checks in progress... (use '-ping' agrument to check connetction latency)",end="\r")
             socks.set_default_proxy()
+
             pass
         return None
+    
+
 
 if __name__ == '__main__':
+    # Connect to the database
+    conn = sqlite3.connect('proxies.db')
+    c = conn.cursor()
+
+    # Create tables for each proxy type if they don't exist
+    if args.type:
+        c.execute(f'''CREATE TABLE IF NOT EXISTS {args.type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+    else:
+        for proxy_type in proxy_types:
+            c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+            
 
     start_time = datetime.now().strftime('%Y%m%d%H%M%S')
-    checker_results_dir = 'checker_results'
-    os.makedirs(checker_results_dir, exist_ok=True)
-    result_file_path = os.path.join(checker_results_dir, f'{start_time}.txt')
+
     if args.url:
         response = requests.get(args.url)
         new_proxies = set(response.text.splitlines())
         ip_ports.update(new_proxies)
-    else:
-        for filename in os.listdir('scan_results/'):
-            if filename.endswith('.txt'):
-                with open(os.path.join('scan_results/', filename), 'r') as f:
-                    for line in f:
-                        ip_ports.add(line.strip())
+    if args.db:
+        conn = sqlite3.connect('proxies.db')
+        c = conn.cursor()
+        if args.type:
+            c.execute(f'''SELECT proxy FROM {args.type}''')
+            rows = c.fetchall()
+            for row in rows:
+                ip_ports.add(row[0])
+        else:
+            for proxy_type in proxy_types:
+                c.execute(f'''SELECT proxy FROM {proxy_type}''')
+                rows = c.fetchall()
+                for row in rows:
+                    ip_ports.add(row[0])
+    if args.scan:
+        conn = sqlite3.connect('proxies.db')
+        c = conn.cursor()
+        c.execute(f'''SELECT proxy FROM {'for_checker'}''')
+        rows = c.fetchall()
+        for row in rows:
+                ip_ports.add(row[0])
+
+            
     try:
         data_written = False
         all_checked_proxies = {}
-        for proxy_type in proxy_types:
+        if args.type:
             checked_proxies = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.w) as executor:
-                futures = [executor.submit(check_proxy, p, proxy_type) for p in ip_ports]
+                futures = [executor.submit(check_proxy, p, args.type) for p in ip_ports]
                 for future in concurrent.futures.as_completed(futures):
                     result = future.result()
                     if result is not None:
                         checked_proxies.append(result)
-            all_checked_proxies[proxy_type] = sorted(checked_proxies, key=lambda x: x[1])
+                    else:
+                        if args.clean:
+                            for p in ip_ports:
+                                c.execute(f'''DELETE FROM {args.type} WHERE proxy = ?''', (p,))
+                        if args.scan:
+                            for p in ip_ports:
+                                c.execute(f'''DELETE FROM {'for_checker'} WHERE proxy = ?''', (p,))
+                        
+            all_checked_proxies[args.type] = sorted(checked_proxies, key=lambda x: x[1])
+        else:
+            for proxy_type in proxy_types:
+                checked_proxies = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=args.w) as executor:
+                    futures = [executor.submit(check_proxy, p, proxy_type) for p in ip_ports]
+                    for future in concurrent.futures.as_completed(futures):
+                        result = future.result()
+                        if result is not None:
+                            checked_proxies.append(result)
+                        else:
+                            if args.clean:
+                                for p in ip_ports:
+                                    c.execute(f'''DELETE FROM {proxy_type} WHERE proxy = ?''', (p,))
+                            if args.scan:
+                                for p in ip_ports:
+                                    c.execute(f'''DELETE FROM {'for_checker'} WHERE proxy = ?''', (p,))
+                                
+                all_checked_proxies[proxy_type] = sorted(checked_proxies, key=lambda x: x[1])
 
-        with open(result_file_path, 'w') as f:
-            os.system('cls' if os.name == 'nt' else 'clear')
-            for proxy_type, checked_proxies in all_checked_proxies.items():
-                for checked_proxy in checked_proxies:
-                    rounded_resp_time = round(checked_proxy[1], 2)
-
-                    f.write(f"{proxy_type} {checked_proxy[0]} {rounded_resp_time} s.\n")
-                    color = colors.get(proxy_type, reset_color)
-                    proxy_color = colors.get(proxy_type, reset_color)
-                    print(f"{proxy_color}{proxy_type}{reset_color} {checked_proxy[0]} {rounded_resp_time} s.")
-                    data_written = True               
-    
+        os.system('cls' if os.name == 'nt' else 'clear')
+        for proxy_type, checked_proxies in all_checked_proxies.items():
+            for checked_proxy in checked_proxies:
+                rounded_resp_time = round(checked_proxy[1], 2)
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                # Write data to the database
+                c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (checked_proxy[0], rounded_resp_time, current_time))
+                print(f"{proxy_type} {checked_proxy[0]} {rounded_resp_time} s.")
+                data_written = True               
+        # Commit changes and close the connection to the database
+        conn.commit()
+        conn.close()
                 # Check if any data was written to the file
         if not data_written:
                 # Delete the file if no data was written
-            os.remove(result_file_path)
             print('No proxy found')
             
     except KeyboardInterrupt:

@@ -4,6 +4,7 @@ import time
 import socks
 import atexit
 import random
+import sqlite3
 import socket
 import argparse
 import datetime
@@ -21,6 +22,7 @@ parser.add_argument('-ping', action='store_true', help='ping "1.1.1.1" before ev
 parser.add_argument('-range', nargs='+', type=str, help='list of IP address ranges in the format 1.1.1.1-2.2.2.2 or CIDR 1.1.1.0/24')
 parser.add_argument('-machine', action='store_true', help='when runs from proxy-machine scrypt(or proxy.py subprocess already running)')
 args = parser.parse_args()
+
 num_threads = args.w
 
 if not args.machine:
@@ -39,11 +41,6 @@ ports = args.port
 socks.set_default_proxy()
 time.sleep(5)
 
-os.makedirs("scan_results", exist_ok=True)
-timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-filename = f"scan_results/{timestamp}.txt"
-with open(filename, "w+") as f:
-    f.close()
 
 def get_random_proxy():
     with open('checked_proxies.txt', 'r') as f:
@@ -82,6 +79,7 @@ class Ping:
 
     def stop(self):
         self.is_running = None
+
 if args.ping:
     pinger = Ping('1.1.1.1')
 
@@ -152,7 +150,6 @@ def scan(host, port):
 def scan_ips(max_threads=num_threads):
     try:
         # Create a flag to keep track of whether any data was written to the file
-        data_written = False  
         ips = get_ip_ranges()
         scanned = set()
         with ThreadPoolExecutor(max_workers=max_threads) as executor:
@@ -165,16 +162,17 @@ def scan_ips(max_threads=num_threads):
             for future in as_completed(futures):
                 proxy, host, port, result = future.result()
                 if result == True:
+                    conn = sqlite3.connect('proxies.db')
+                    c = conn.cursor()
+                    c.execute(f'''CREATE TABLE IF NOT EXISTS {'for_checker'} (proxy TEXT PRIMARY KEY)''')
+                    c.execute(f'''INSERT OR REPLACE INTO for_checker (proxy) VALUES (?)''', (f"{host}:{port}",))
+                    conn.commit()
+                    conn.close()
                     print(f'{host}:{port} is open. Scanned with Proxy {proxy}')
-                    with open(filename, "a") as f:
-                        f.write(f"{host}:{port}\n")             
-                    # Set the data_written flag to True
-                    data_written = True               
+             
                 sys.stdout.flush()       
         # Check if any data was written to the file
-        if not data_written:
-            # Delete the file if no data was written
-            os.remove(filename)
+
     except KeyboardInterrupt:
         print("\nExiting...")
         sys.exit(0)

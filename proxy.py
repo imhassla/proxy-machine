@@ -2,6 +2,7 @@ import requests
 import schedule
 import subprocess
 import threading
+import sqlite3
 import time
 import os
 import bs4
@@ -10,6 +11,7 @@ import argparse
 import json
 import socks
 import socket
+from datetime import datetime
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +26,6 @@ parser.add_argument('-w', type=int, default=30, help='number of worker threads t
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-top', action='store_true', help='If specified, store top 10 proxies in file')
 parser.add_argument('-scan', action='store_true', help='If specified, perform scan.py for checked proxies ip ranges.')
-
 parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies from')
 args = parser.parse_args()
 
@@ -65,7 +66,7 @@ sip = b.select(" .ipblockgradient .ip")[0].getText()
 sip = sip.strip()
 
 # Create or clear the checked_proxies.txt file
-open(checked_filename, "w+").close()
+#open(checked_filename, "w+").close()
 
 # Print a message indicating that data is being retrieved from sources and primary proxy checks are being performed
 txt = '\033[1;36mGetting data from sources and primary proxy checks. \nStatistics will be displayed soon...\033[0m'
@@ -107,6 +108,16 @@ def check_proxy(proxy):
             data = r.json()
             if data.get('origin') != sip:
                 response_time = r.elapsed.total_seconds()
+                rounded_resp_time = round(response_time,2)
+                conn = sqlite3.connect('proxies.db')
+                # Create tables for each proxy type if they don't exist
+                c = conn.cursor()
+                c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+                # Write data to the database
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
+                conn.commit()
+                conn.close()
                 return (proxy, response_time)
     except (Exception) as e:
         # If an error occurs, reset the default proxy settings and continue.
@@ -184,6 +195,7 @@ def check_proxies():
     alive_proxies = [proxy[0] for proxy in alive_proxies]
 
     # Write the list of alive proxies to the checked_proxies.txt file.
+    
     with file_lock, open(checked_filename, "w") as f:
         for proxy in alive_proxies:
             f.write(proxy + "\n")
