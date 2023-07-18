@@ -155,6 +155,7 @@ def scan_ips(max_threads=num_threads):
         scanned = set()
         with ThreadPoolExecutor(max_workers=max_threads) as executor:
             futures = []
+            data_to_write = []
             for ip in ips:
                 for port in ports:
                     if (ip, port) not in scanned:
@@ -163,7 +164,7 @@ def scan_ips(max_threads=num_threads):
             for future in as_completed(futures):
                 proxy, host, port, result = future.result()
                 if result == True:
-                    data_to_write = []
+                    
                     data_to_write.append((f"{host}:{port}",))
                     
                     print(f'{host}:{port} is open. Scanned with Proxy {proxy}')
