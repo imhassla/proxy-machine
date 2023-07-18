@@ -148,6 +148,9 @@ def scan(host, port):
             continue
 
 def scan_ips(max_threads=num_threads):
+    conn = sqlite3.connect('proxies.db')
+    c = conn.cursor()
+    c.execute(f'''CREATE TABLE IF NOT EXISTS {'for_checker'} (proxy TEXT PRIMARY KEY)''')
     try:
         # Create a flag to keep track of whether any data was written to the file
         ips = get_ip_ranges()
@@ -162,15 +165,23 @@ def scan_ips(max_threads=num_threads):
             for future in as_completed(futures):
                 proxy, host, port, result = future.result()
                 if result == True:
-                    conn = sqlite3.connect('proxies.db')
-                    c = conn.cursor()
-                    c.execute(f'''CREATE TABLE IF NOT EXISTS {'for_checker'} (proxy TEXT PRIMARY KEY)''')
-                    c.execute(f'''INSERT OR REPLACE INTO for_checker (proxy) VALUES (?)''', (f"{host}:{port}",))
-                    conn.commit()
-                    conn.close()
+                    data_to_write = []
+                    data_to_write.append((f"{host}:{port}",))
+                    
                     print(f'{host}:{port} is open. Scanned with Proxy {proxy}')
              
-                sys.stdout.flush()       
+                sys.stdout.flush()    
+            if data_to_write:
+                # Begin a transaction
+                c.execute('BEGIN')
+
+                # Write data to the database
+                c.executemany(f'''INSERT OR REPLACE INTO for_checker (proxy) VALUES (?)''', (f"{host}:{port}",))
+
+                # Commit the transaction
+                c.execute('COMMIT')
+            conn.close()
+
         # Check if any data was written to the file
 
     except KeyboardInterrupt:
