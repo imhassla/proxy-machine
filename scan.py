@@ -180,6 +180,7 @@ def scan_ips(max_threads=num_threads):
 
             # Commit the transaction
             c.execute('COMMIT')
+            data_to_write = []
         conn.close()
 
         # Check if any data was written to the file
