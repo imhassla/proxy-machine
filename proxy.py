@@ -109,16 +109,10 @@ def check_proxy(proxy):
             if data.get('origin') != sip:
                 response_time = r.elapsed.total_seconds()
                 rounded_resp_time = round(response_time,2)
-                conn = sqlite3.connect('proxies.db')
-                # Create tables for each proxy type if they don't exist
-                c = conn.cursor()
-                c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
-                # Write data to the database
+
                 current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
-                conn.commit()
-                conn.close()
-                return (proxy, response_time)
+
+                return (proxy, rounded_resp_time, current_time)
     except (Exception) as e:
         # If an error occurs, reset the default proxy settings and continue.
         #print(f'Error: {e}') #for debug
@@ -169,6 +163,10 @@ def get_proxies():
 
 # Define a function to check all of the proxies in memory and in the checked_proxies.txt file using multiple worker threads.
 def check_proxies():
+    conn = sqlite3.connect('proxies.db')
+    c = conn.cursor()
+    c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+    c.execute('BEGIN')
     # Read the checked_proxies.txt file and combine its contents with the set of proxies in memory to create a set of all known proxies.
     with open(checked_filename, "r") as f:
         checked_proxies = set(f.read().splitlines())
@@ -184,12 +182,20 @@ def check_proxies():
         for future in as_completed(futures):
             result = future.result()
             if result is not None:
-                results.append(result)
+                # Unpack the result tuple into separate variables
+                proxy, rounded_resp_time, current_time = result
+
+                # Append the result values to the results list
+                results.append((proxy, rounded_resp_time, current_time))
             else:
                 proxy = futures[future]
                 # If a proxy check was not successful, remove it from the set of proxies in memory.
                 proxies.discard(proxy)
-
+    if results:
+        c.executemany(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', results)
+        c.execute('COMMIT')
+        conn.close()
+        
     # Sort the list of alive proxies by response time and extract only the proxy strings from each tuple.
     alive_proxies = sorted(results, key=lambda x: x[1])
     alive_proxies = [proxy[0] for proxy in alive_proxies]
@@ -199,6 +205,7 @@ def check_proxies():
     with file_lock, open(checked_filename, "w") as f:
         for proxy in alive_proxies:
             f.write(proxy + "\n")
+        results = []
 
 # Define a function to track the availability of checked proxies over time and display statistics about their uptime.
 def track_proxies():
