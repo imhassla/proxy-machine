@@ -171,16 +171,16 @@ def scan_ips(max_threads=num_threads):
                     print(f'{host}:{port} is open. Scanned with Proxy {proxy}')
              
                 sys.stdout.flush()    
-            if data_to_write:
-                # Begin a transaction
-                c.execute('BEGIN')
+        if data_to_write:
+            # Begin a transaction
+            c.execute('BEGIN')
 
-                # Write data to the database
-                c.executemany(f'''INSERT OR REPLACE INTO for_checker (proxy) VALUES (?)''', (f"{host}:{port}",))
+            # Write data to the database
+            c.executemany(f'''INSERT OR REPLACE INTO for_checker (proxy) VALUES (?)''', (f"{host}:{port}",))
 
-                # Commit the transaction
-                c.execute('COMMIT')
-            conn.close()
+            # Commit the transaction
+            c.execute('COMMIT')
+        conn.close()
 
         # Check if any data was written to the file
 
