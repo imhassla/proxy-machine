@@ -41,9 +41,8 @@ ports = args.port
 socks.set_default_proxy()
 time.sleep(5)
 
-
 def get_random_proxy():
-    with open('checked_proxies.txt', 'r') as f:
+    with open('last_checked.txt', 'r') as f:
         proxies = f.readlines()
     if len(proxies) >= 3:
         top_third = proxies[:len(proxies)//3]
@@ -150,7 +149,6 @@ def scan(host, port):
 def scan_ips(max_threads=num_threads):
 
     try:
-        # Create a flag to keep track of whether any data was written to the file
         ips = get_ip_ranges()
         scanned = set()
         with ThreadPoolExecutor(max_workers=max_threads) as executor:
@@ -164,28 +162,19 @@ def scan_ips(max_threads=num_threads):
             for future in as_completed(futures):
                 proxy, host, port, result = future.result()
                 if result == True:
-                    
                     data_to_write.append((f"{host}:{port}",))
-                    
                     print(f'{host}:{port} is open. Scanned with Proxy {proxy}')
              
                 sys.stdout.flush()    
         if data_to_write:
-            conn = sqlite3.connect('proxies.db')
+            conn = sqlite3.connect('data.db',timeout = 10)
             c = conn.cursor()
-            c.execute(f'''CREATE TABLE IF NOT EXISTS {'for_checker'} (proxy TEXT PRIMARY KEY)''')
-            # Begin a transaction
+            c.execute(f'''CREATE TABLE IF NOT EXISTS {'_scan_results'} (ip_port TEXT PRIMARY KEY)''')
             c.execute('BEGIN')
-
-            # Write data to the database
-            c.executemany(f'''INSERT OR REPLACE INTO for_checker (proxy) VALUES (?)''', data_to_write)
-
-            # Commit the transaction
+            c.executemany(f'''INSERT OR REPLACE INTO _scan_results (ip_port) VALUES (?)''', data_to_write)
             c.execute('COMMIT')
             data_to_write = []
             conn.close()
-
-        # Check if any data was written to the file
 
     except KeyboardInterrupt:
         print("\nExiting...")
