@@ -21,13 +21,13 @@ from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
 parser.add_argument('-l', type=int, default=70, help='limit of proxies stored in last_checked.txt')
-parser.add_argument('-p', type=int, default=1000, help='ping (ms.) of the proxy server. (for default providers only)')
+parser.add_argument('-p', type=int, default=1500, help='ping (ms.) of the proxy server. (for default providers only)')
 parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
 parser.add_argument('-w', type=int, default=25, help='number of worker threads to use when checking proxies')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-top', action='store_true', help='If specified, store top 10 proxies in file')
 parser.add_argument('-scan', action='store_true', help='If specified, perform scan.py for checked proxies ip ranges.')
-parser.add_argument('-sw', type=int, default=3, help='number of scanner threads')
+parser.add_argument('-sw', type=int, default=3, help='number of scanner workers threads')
 parser.add_argument('-db', action='store_true', help='store checked proxies in db')
 parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies from')
 args = parser.parse_args()
@@ -144,49 +144,6 @@ def check_proxy(proxy, proxy_type):
 
             pass
         return None
-
-""" 
-def check_proxy(proxy):
-    # Initialize an empty dictionary to store the proxy settings for HTTP and HTTPS requests.
-    proxies = {} 
-    try:
-        # Split the proxy string into host and port components.
-        proxy_host, proxy_port = proxy.split(':')       
-        # Set up the proxy settings based on the type of proxy specified by the command line arguments.
-        if proxy_type == 'http':
-            proxies = {
-                'http': f'http://{proxy_host}:{proxy_port}',
-            }
-        elif proxy_type == 'https':
-            proxies = {
-                'https': f'https://{proxy_host}:{proxy_port}',
-            }
-        elif proxy_type == 'socks4':
-            socks.set_default_proxy(socks.SOCKS4, proxy_host, int(proxy_port))
-            socket.socket = socks.socksocket
-        elif proxy_type == 'socks5':
-            socks.set_default_proxy(socks.SOCKS5, proxy_host, int(proxy_port))
-            socket.socket = socks.socksocket
-        
-        # Make a request to https://httpbin.org/ip using the specified proxy settings and measure the response time.
-        url = 'https://httpbin.org/ip'
-        r = requests.get(url, proxies=proxies, timeout=args.t)
-      
-        # If the request was successful and the returned IP address is different from the user's IP address, return the proxy and response time.
-        if r.status_code == 200:
-            data = r.json()
-            if data.get('origin') != sip:
-                response_time = r.elapsed.total_seconds()
-                rounded_resp_time = round(response_time,2)
-
-                return (proxy, rounded_resp_time)
-    except (Exception) as e:
-        # If an error occurs, reset the default proxy settings and continue.
-        #print(f'Error: {e}') #for debug
-        socks.set_default_proxy()
-        pass
-    # If the proxy check was not successful, return None.
-    return None """
 
 # Define a function to retrieve proxies from various sources and update the set of proxies in memory.
 def get_proxies():
