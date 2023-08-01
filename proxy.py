@@ -75,12 +75,6 @@ data = response.read().decode('utf-8')
 data = json.loads(data)
 sip = data.get('origin')
 
-response = urllib.request.urlopen(url, timeout=args.t)
-data = response.read().decode('utf-8')
-data = json.loads(data)
-
-# Create or clear the last_checked.txt file
-#open(checked_filename, "w+").close()
 
 # Print a message indicating that data is being retrieved from sources and primary proxy checks are being performed
 txt = '\033[1;36mGetting data from sources and primary proxy checks. \nStatistics will be displayed soon...\033[0m'
@@ -389,3 +383,4 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         logging.info('Exiting...')
+
