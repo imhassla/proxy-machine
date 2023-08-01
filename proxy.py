@@ -5,7 +5,6 @@ import threading
 import sqlite3
 import time
 import os
-import bs4
 import logging
 import argparse
 import json
@@ -49,7 +48,7 @@ else:
     api_url = f"https://api.proxyscrape.com/v2/?request=displayproxies&protocol={args.type}&timeout={args.p}&country=all&ssl=all&anonymity=all"
 
 # Set the maximum number of proxies to store in memory and other variables based on the command line arguments
-max = args.l*6 
+max = args.l*10 
 t = args.t
 workers = args.w
 
@@ -64,12 +63,21 @@ if args.scan:
     proxy_type = 'socks4'
 proxy_absence_count = {}
 process = None
-os.system(f"touch {checked_filename}")
-# Get the user's IP address by making a request to 2ip.ua and parsing the response using Beautiful Soup
-selfip = requests.get('https://2ip.ua/ru/')
-b = bs4.BeautifulSoup(selfip.text, "html.parser")
-sip = b.select(" .ipblockgradient .ip")[0].getText()
-sip = sip.strip()
+
+open(checked_filename, "w+").close()
+
+# Get the user's IP address 
+url = 'https://httpbin.org/ip'
+opener = urllib.request.build_opener()
+urllib.request.install_opener(opener)
+response = urllib.request.urlopen(url)
+data = response.read().decode('utf-8')
+data = json.loads(data)
+sip = data.get('origin')
+
+response = urllib.request.urlopen(url, timeout=args.t)
+data = response.read().decode('utf-8')
+data = json.loads(data)
 
 # Create or clear the last_checked.txt file
 #open(checked_filename, "w+").close()
