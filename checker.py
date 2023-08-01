@@ -1,5 +1,4 @@
 import os
-import bs4
 import time
 import socks
 import socket
@@ -67,13 +66,17 @@ class Ping:
 if args.ping:
     pinger = Ping('1.1.1.1')
 
-# Get the user's IP address by making a request to 2ip.ua and parsing the response using Beautiful Soup
+# Get the user's IP address 
 while True:
     try:
-        selfip = requests.get('https://2ip.ua/ru/')
-        b = bs4.BeautifulSoup(selfip.text, "html.parser")
-        sip = b.select(" .ipblockgradient .ip")[0].getText()
-        sip = sip.strip()
+        # Get the user's IP address 
+        url = 'https://httpbin.org/ip'
+        opener = urllib.request.build_opener()
+        urllib.request.install_opener(opener)
+        response = urllib.request.urlopen(url)
+        data = response.read().decode('utf-8')
+        data = json.loads(data)
+        sip = data.get('origin')
         break
     except Exception as e:
         print(f' Connection error: {e}. Retrying in 5 seconds...',end="\r")
