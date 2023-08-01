@@ -67,13 +67,20 @@ process = None
 open(checked_filename, "w+").close()
 
 # Get the user's IP address 
-url = 'https://httpbin.org/ip'
-opener = urllib.request.build_opener()
-urllib.request.install_opener(opener)
-response = urllib.request.urlopen(url)
-data = response.read().decode('utf-8')
-data = json.loads(data)
-sip = data.get('origin')
+while True:
+    try:
+        # Get the user's IP address 
+        url = 'https://httpbin.org/ip'
+        opener = urllib.request.build_opener()
+        urllib.request.install_opener(opener)
+        response = urllib.request.urlopen(url)
+        data = response.read().decode('utf-8')
+        data = json.loads(data)
+        sip = data.get('origin')
+        break
+    except Exception as e:
+        print(f' Connection error: {e}. Retrying in 5 seconds...',end="\r")
+        time.sleep(5)
 
 
 # Print a message indicating that data is being retrieved from sources and primary proxy checks are being performed
@@ -383,4 +390,3 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         logging.info('Exiting...')
-
