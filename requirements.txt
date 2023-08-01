@@ -1,6 +1,5 @@
 requests
 schedule
 ipaddress
-bs4
 socks
 PySocks
