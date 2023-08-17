@@ -65,6 +65,11 @@ proxy_absence_count = {}
 process = None
 
 open(checked_filename, "w+").close()
+# Print a message indicating that data is being retrieved from sources and primary proxy checks are being performed
+txt = '\033[1;36mGetting data from sources and primary proxy checks. \nStatistics will be displayed soon...\033[0m'
+for i in txt:  
+    time.sleep(0.01)
+    print(i, end='', flush=True)
 
 # Get the user's IP address 
 while True:
@@ -82,12 +87,6 @@ while True:
         print(f' Connection error: {e}. Retrying in 5 seconds...',end="\r")
         time.sleep(5)
 
-
-# Print a message indicating that data is being retrieved from sources and primary proxy checks are being performed
-txt = '\033[1;36mGetting data from sources and primary proxy checks. \nStatistics will be displayed soon...\033[0m'
-for i in txt:  
-    time.sleep(0.01)
-    print(i, end='', flush=True)
 
 # Define a function to check a single proxy by making a request to https://httpbin.org/ip using the proxy and measuring the response time.
 
@@ -229,8 +228,6 @@ def check_proxies():
                 # If a proxy check was not successful, remove it from the set of proxies in memory.
                 proxies.discard(proxy)
                 
-
-
 def recheck_alive_proxies():
 
     while True:
@@ -262,8 +259,6 @@ def write_alive_proxies_to_file():
         for proxy in alive_proxies_set:
             f.write(proxy + "\n")
     
-
-
 # Define a function to track the availability of checked proxies over time and display statistics about their uptime.
 def track_proxies():
     # Read the last_checked.txt file to get a list of currently available (checked) proxies.
