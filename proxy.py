@@ -1,3 +1,5 @@
+from ast import While
+from errno import EEXIST
 import requests
 import schedule
 import subprocess
@@ -13,6 +15,7 @@ import socks
 import socket
 import urllib.request
 import selenium
+from typing import Optional
 from datetime import datetime
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -46,7 +49,8 @@ logging.basicConfig(level=logging.INFO)
 os.system('cls' if os.name == 'nt' else 'clear')
 
 # Set the maximum number of open file descriptors to 4000
-os.system('ulimit -n 40000')
+os.system('ulimit -n 50000')
+os.system('rm geckodriver.log')
 
 
 # Set the API URL for retrieving proxies based on the command line arguments or use the default URL if not specified
@@ -157,10 +161,8 @@ def check_proxy(proxy, proxy_type):
             socks.set_default_proxy()
             pass
         return None
+        
 
-
-
-# Define a function to retrieve proxies from various sources and update the set of proxies in memory.
 def get_proxies():
     # Reset the default proxy settings.
     socks.set_default_proxy()
@@ -254,6 +256,7 @@ def check_proxies():
                         c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
                         c.execute('BEGIN')
                         c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
+                        
                         c.execute('COMMIT')
                         conn.close()
                 else:
@@ -288,7 +291,6 @@ def write_alive_proxies_to_file():
         for proxy in alive_proxies_set:
             f.write(proxy + "\n")
     
-# Define a function to track the availability of checked proxies over time and display statistics about their uptime.
 def track_proxies():
     # Read the last_checked.txt file to get a list of currently available (checked) proxies.
     with open(checked_filename, "r") as f:
@@ -424,7 +426,7 @@ if args.scan:
 def run_thread(func, interval):
     # Run the given function at the specified interval
     while True:
-        func()
+        func()   
         time.sleep(interval)
 
 if __name__ == "__main__":
@@ -436,14 +438,13 @@ if __name__ == "__main__":
     t5 = threading.Thread(target=recheck_alive_proxies)
     t6 = threading.Thread(target=run_thread, args=(update_proxies, 15))
     
-    
     t1.start()
     t2.start()
     t3.start()
     t4.start()
     t5.start()
     t6.start()
-    
+
     t1.join()
     t2.join()
     t3.join()
