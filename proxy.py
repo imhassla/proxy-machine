@@ -3,6 +3,7 @@ import schedule
 import subprocess
 import threading
 import sqlite3
+import random
 import time
 import os
 import logging
@@ -16,13 +17,19 @@ from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import Select
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.firefox.options import Options
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
 parser.add_argument('-l', type=int, default=50, help='limit of proxies stored in last_checked.txt')
 parser.add_argument('-p', type=int, default=4000, help='ping (ms.) of the proxy server. (for default providers only)')
 parser.add_argument('-t', type=int, default=6, help='timeout (s.) of checker')
-parser.add_argument('-w', type=int, default=50, help='number of worker threads to use when checking proxies')
+parser.add_argument('-w', type=int, default=100, help='number of worker threads to use when checking proxies')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-top', action='store_true', help='If specified, store top 10 proxies in file')
 parser.add_argument('-scan', action='store_true', help='If specified, perform scan.py for checked proxies ip ranges.')
@@ -152,6 +159,8 @@ def check_proxy(proxy, proxy_type):
             pass
         return None
 
+
+
 # Define a function to retrieve proxies from various sources and update the set of proxies in memory.
 def get_proxies():
     # Reset the default proxy settings.
@@ -186,7 +195,44 @@ def get_proxies():
             #logging.error(f"An error occurred while getting proxies from {source}: {e}")
             pass
 
-# Define a function to check all of the proxies in memory and in the last_checked.txt file using multiple worker threads.
+def update_proxies():
+    proxy_type_map = {'http': '1', 'https': '1', 'socks4': '2', 'socks5': '2'}
+    proxy_type_value = proxy_type_map[args.type]
+    options = Options()
+    options.headless = True
+
+    # Replace with the path to your web driver
+    driver = webdriver.Firefox(options=options)
+
+    driver.get('https://spys.one/aproxy/')
+
+    # Select the option to show more proxies from the #xpp menu
+    select = Select(driver.find_element(By.CSS_SELECTOR, '#xpp'))
+    select.select_by_value('5')
+
+    # Wait for the page to reload
+    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')))
+
+    # Select the desired proxy type from the #xf5 menu
+    select = Select(driver.find_element(By.CSS_SELECTOR, '#xf5'))
+    select.select_by_value(proxy_type_value)
+
+    # Wait for the page to reload
+    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')))
+
+    # Wait for the JavaScript code to execute and generate the data
+    rows = driver.find_elements(By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')
+
+    for row in rows:
+        try:
+            ip_address_element = row.find_element(By.CSS_SELECTOR, 'td:nth-child(1) > font')
+            ip_address = ip_address_element.text.strip()
+            if not any(c.isalpha() for c in ip_address):
+                proxies.add(ip_address)
+        except:
+            pass
+
+    driver.quit()
 
 def check_proxies():
     while True:
@@ -195,7 +241,7 @@ def check_proxies():
             continue
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {}
-            for proxy in proxies:
+            for proxy in random.sample(list(proxies), len(proxies)):
                 future = executor.submit(check_proxy, proxy, proxy_type)
                 futures[future] = proxy
             
@@ -216,10 +262,8 @@ def check_proxies():
                 else:
                     proxy = futures[future]
                     proxies.discard(proxy)
-
                 
 def recheck_alive_proxies():
-
     while True:
         # Create a copy of the set of alive proxies
         alive_proxies = set(alive_proxies_set)
@@ -242,7 +286,6 @@ def recheck_alive_proxies():
         time.sleep(10)
 
 def write_alive_proxies_to_file():
-       
     # Write the list of alive proxies to the checked_filename file.
     with file_lock, open(checked_filename, "w") as f:
         for proxy in alive_proxies_set:
@@ -394,6 +437,7 @@ if __name__ == "__main__":
     t3 = threading.Thread(target=run_thread, args=(track_proxies, 10))
     t4 = threading.Thread(target=run_thread, args=(write_alive_proxies_to_file, 2))
     t5 = threading.Thread(target=recheck_alive_proxies)
+    t6 = threading.Thread(target=run_thread, args=(update_proxies, 15))
     
     
     t1.start()
@@ -401,10 +445,11 @@ if __name__ == "__main__":
     t3.start()
     t4.start()
     t5.start()
+    t6.start()
     
-    # Wait for all threads to finish
     t1.join()
     t2.join()
     t3.join()
     t4.join()
     t5.join()
+    t6.join()
