@@ -20,8 +20,8 @@ from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
 parser.add_argument('-l', type=int, default=50, help='limit of proxies stored in last_checked.txt')
-parser.add_argument('-p', type=int, default=3500, help='ping (ms.) of the proxy server. (for default providers only)')
-parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
+parser.add_argument('-p', type=int, default=4000, help='ping (ms.) of the proxy server. (for default providers only)')
+parser.add_argument('-t', type=int, default=6, help='timeout (s.) of checker')
 parser.add_argument('-w', type=int, default=50, help='number of worker threads to use when checking proxies')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-top', action='store_true', help='If specified, store top 10 proxies in file')
@@ -53,7 +53,6 @@ workers = args.w
 # Initialize a set to store the proxies and other variables for tracking proxy statistics and availability
 proxies = set()
 alive_proxies_set = set()
-alive_proxies_lock = threading.Lock()
 checked_filename = "last_checked.txt"
 top10_filename = "top10.txt"
 file_lock = Lock()
@@ -167,9 +166,7 @@ def get_proxies():
     try:
         response = requests.get(api_url)
         new_proxies = set(response.text.splitlines())
-        with file_lock:
-            # Update the set of proxies in memory with any new proxies that were not already in the set.
-            proxies.update(new_proxies - proxies)
+        proxies.update(new_proxies - proxies)
     except requests.exceptions.RequestException as e:
         #logging.error(f"An error occurred while getting proxies: {e}")
         pass
@@ -184,9 +181,7 @@ def get_proxies():
         try:
             response = requests.get(source)
             new_proxies = set(response.text.splitlines())
-            with file_lock:
-                # Update the set of proxies in memory with any new proxies that were not already in the set.
-                proxies.update(new_proxies - proxies)
+            proxies.update(new_proxies - proxies)
         except requests.exceptions.RequestException as e:
             #logging.error(f"An error occurred while getting proxies from {source}: {e}")
             pass
@@ -194,39 +189,34 @@ def get_proxies():
 # Define a function to check all of the proxies in memory and in the last_checked.txt file using multiple worker threads.
 
 def check_proxies():
-
-    # Combine the set of proxies in memory with the set of alive proxies to create a set of all known proxies.
-    all_proxies = proxies 
-
-    # Use a ThreadPoolExecutor to check all of the known proxies concurrently using multiple worker threads.
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {}
-        for proxy in all_proxies:
-            future = executor.submit(check_proxy, proxy, proxy_type)
-            futures[future] = proxy
-        
-        for future in as_completed(futures):
-            result = future.result()
-            if result is not None:
-                # Unpack the result tuple into separate variables
-                proxy, rounded_resp_time, current_time = result
-                
-                # Update the set of alive proxies in memory.
-                with alive_proxies_lock:
+    while True:
+        if not proxies:
+            time.sleep(1)
+            continue
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            for proxy in proxies:
+                future = executor.submit(check_proxy, proxy, proxy_type)
+                futures[future] = proxy
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    proxy, rounded_resp_time, current_time = result
                     alive_proxies_set.add(proxy)
-                
-                if args.db:
-                    conn = sqlite3.connect('data.db',timeout = 10)
-                    c = conn.cursor()
-                    c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
-                    c.execute('BEGIN')
-                    c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
-                    c.execute('COMMIT')
-                    conn.close()
-            else:
-                proxy = futures[future]
-                # If a proxy check was not successful, remove it from the set of proxies in memory.
-                proxies.discard(proxy)
+                    
+                    if args.db:
+                        conn = sqlite3.connect('data.db',timeout = 10)
+                        c = conn.cursor()
+                        c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+                        c.execute('BEGIN')
+                        c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
+                        c.execute('COMMIT')
+                        conn.close()
+                else:
+                    proxy = futures[future]
+                    proxies.discard(proxy)
+
                 
 def recheck_alive_proxies():
 
@@ -246,8 +236,7 @@ def recheck_alive_proxies():
                 if result is None:
                     proxy = futures[future]
                     # If a proxy check was not successful, remove it from the set of alive proxies in memory.
-                    with alive_proxies_lock:
-                        alive_proxies_set.discard(proxy)
+                    alive_proxies_set.discard(proxy)
         
         # Sleep for 10 seconds before rechecking the proxies again.
         time.sleep(10)
@@ -284,7 +273,7 @@ def track_proxies():
         else:
             proxy_absence_count[proxy] += 1
         # If a proxy has been absent for more than one iteration, remove it from both the proxy_stats and proxy_absence_count dictionaries.
-        if proxy_absence_count[proxy] > 1:
+        if proxy_absence_count[proxy] > 0:
             del proxy_stats[proxy]
             del proxy_absence_count[proxy]
 
@@ -400,8 +389,8 @@ def run_thread(func, interval):
 
 if __name__ == "__main__":
     # Create and start threads for each of the functions
-    t1 = threading.Thread(target=run_thread, args=(get_proxies, 15))
-    t2 = threading.Thread(target=run_thread, args=(check_proxies, 10))
+    t1 = threading.Thread(target=run_thread, args=(get_proxies, 10))
+    t2 = threading.Thread(target=check_proxies)
     t3 = threading.Thread(target=run_thread, args=(track_proxies, 10))
     t4 = threading.Thread(target=run_thread, args=(write_alive_proxies_to_file, 2))
     t5 = threading.Thread(target=recheck_alive_proxies)
