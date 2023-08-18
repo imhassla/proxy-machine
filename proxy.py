@@ -12,6 +12,7 @@ import json
 import socks
 import socket
 import urllib.request
+import selenium
 from datetime import datetime
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,7 +28,7 @@ from selenium.webdriver.firefox.options import Options
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
 parser.add_argument('-l', type=int, default=50, help='limit of proxies stored in last_checked.txt')
-parser.add_argument('-p', type=int, default=4000, help='ping (ms.) of the proxy server. (for default providers only)')
+parser.add_argument('-p', type=int, default=3000, help='ping (ms.) of the proxy server. (for default providers only)')
 parser.add_argument('-t', type=int, default=6, help='timeout (s.) of checker')
 parser.add_argument('-w', type=int, default=100, help='number of worker threads to use when checking proxies')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
@@ -100,7 +101,6 @@ def check_proxy(proxy, proxy_type):
 
     while True:
         # Initialize an empty dictionary to store the proxy settings for HTTP and HTTPS requests.
-        proxies = {}
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         try:
 
@@ -155,7 +155,6 @@ def check_proxy(proxy, proxy_type):
                     
         except (Exception) as e:
             socks.set_default_proxy()
-
             pass
         return None
 
@@ -201,9 +200,7 @@ def update_proxies():
     options = Options()
     options.headless = True
 
-    # Replace with the path to your web driver
     driver = webdriver.Firefox(options=options)
-
     driver.get('https://spys.one/aproxy/')
 
     # Select the option to show more proxies from the #xpp menu
