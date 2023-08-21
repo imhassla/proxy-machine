@@ -2,20 +2,15 @@ import os
 import time
 import socks
 import socket
-import pycurl
 import re
-from io import BytesIO
 import json
-import random
 import sqlite3
-import logging
 import requests
 import argparse
 import threading
 import subprocess
 import urllib.request
 import concurrent.futures
-from tqdm import tqdm
 from datetime import datetime
 from contextlib import closing
 import xml.etree.ElementTree as ET
@@ -217,7 +212,13 @@ if __name__ == '__main__':
             "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/https.txt",
             "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/socks4.txt",
             "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/socks5.txt",
-            "https://github.com/proxy4parsing/proxy-list/blob/main/http.txt"
+            "https://github.com/proxy4parsing/proxy-list/blob/main/http.txt",
+            "https://github.com/roosterkid/openproxylist/blob/main/HTTPS_RAW.txt",
+            "https://github.com/roosterkid/openproxylist/blob/main/SOCKS4_RAW.txt",
+            "https://github.com/roosterkid/openproxylist/blob/main/SOCKS5_RAW.txt",
+            "https://github.com/ALIILAPRO/Proxy/blob/main/http.txt",
+            "https://github.com/ALIILAPRO/Proxy/blob/main/socks4.txt",
+            "https://github.com/ALIILAPRO/Proxy/blob/main/socks5.txt"
         ]
 
         proxies = set()
