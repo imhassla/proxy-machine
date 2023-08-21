@@ -23,7 +23,6 @@ from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
-parser.add_argument('-l', type=int, default=50, help='limit of proxies stored in last_checked.txt')
 parser.add_argument('-p', type=int, default=3000, help='ping (ms.) of the proxy server. (for default providers only)')
 parser.add_argument('-t', type=int, default=6, help='timeout (s.) of checker')
 parser.add_argument('-w', type=int, default=100, help='number of worker threads to use when checking proxies')
@@ -158,10 +157,6 @@ def get_proxies():
         # Reset the default proxy settings.
         socks.set_default_proxy()
         
-        # If the number of checked proxies in the last_checked.txt file has reached the limit specified by the command line arguments, return without retrieving any new proxies.
-        with open(checked_filename, 'r') as f:
-            if len(f.readlines()) > args.l:
-                return
         # Try to retrieve proxies from the API URL specified by the command line arguments or the default API URL.
         try:
             response = requests.get(api_url)
@@ -252,9 +247,7 @@ def write_alive_proxies_to_file():
             f.write(proxy + "\n")
     
 def track_proxies():
-    # Read the last_checked.txt file to get a list of currently available (checked) proxies.
-    with open(checked_filename, "r") as f:
-        checked_proxies = set(f.read().splitlines())
+    checked_proxies = alive_proxies_set.copy()
 
     # For each checked proxy, increment its count in the proxy_stats dictionary. If it is not already present in the dictionary, add it with an initial count of 1.
     for proxy in checked_proxies:
