@@ -164,104 +164,112 @@ def check_proxy(proxy, proxy_type):
         
 
 def get_proxies():
-    # Reset the default proxy settings.
-    socks.set_default_proxy()
-    # If the number of proxies in memory has reached the maximum limit, clear the set of proxies.
-
-    # If the number of checked proxies in the last_checked.txt file has reached the limit specified by the command line arguments, return without retrieving any new proxies.
-    with open(checked_filename, 'r') as f:
-        if len(f.readlines()) > args.l:
-            return
-    # Try to retrieve proxies from the API URL specified by the command line arguments or the default API URL.
     try:
-        response = requests.get(api_url)
-        new_proxies = set(response.text.splitlines())
-        proxies.update(new_proxies - proxies)
-    except requests.exceptions.RequestException as e:
-        #logging.error(f"An error occurred while getting proxies: {e}")
-        pass
-
-    # Define additional sources for retrieving proxies.
-    additional_sources = [
-        f"https://www.proxyscan.io/api/proxy?format=txt&limit=100&type={args.type}&uptime=20&ping={args.p}",
-        f"https://www.proxy-list.download/api/v1/get?type={args.type}"
-    ]
-    # Try to retrieve proxies from each additional source.
-    for source in additional_sources:
+        # Reset the default proxy settings.
+        socks.set_default_proxy()
+        
+        # If the number of checked proxies in the last_checked.txt file has reached the limit specified by the command line arguments, return without retrieving any new proxies.
+        with open(checked_filename, 'r') as f:
+            if len(f.readlines()) > args.l:
+                return
+        # Try to retrieve proxies from the API URL specified by the command line arguments or the default API URL.
         try:
-            response = requests.get(source)
+            response = requests.get(api_url)
             new_proxies = set(response.text.splitlines())
             proxies.update(new_proxies - proxies)
         except requests.exceptions.RequestException as e:
-            #logging.error(f"An error occurred while getting proxies from {source}: {e}")
+            #logging.error(f"An error occurred while getting proxies: {e}")
             pass
+
+        # Define additional sources for retrieving proxies.
+        additional_sources = [
+            f"https://www.proxyscan.io/api/proxy?format=txt&limit=100&type={args.type}&uptime=20&ping={args.p}",
+            f"https://www.proxy-list.download/api/v1/get?type={args.type}"
+        ]
+        # Try to retrieve proxies from each additional source.
+        for source in additional_sources:
+            try:
+                response = requests.get(source)
+                new_proxies = set(response.text.splitlines())
+                proxies.update(new_proxies - proxies)
+            except requests.exceptions.RequestException as e:
+                #logging.error(f"An error occurred while getting proxies from {source}: {e}")
+                pass
+    except:
+        pass
 
 def update_proxies():
-    proxy_type_map = {'http': '1', 'https': '1', 'socks4': '2', 'socks5': '2'}
-    proxy_type_value = proxy_type_map[args.type]
-    options = Options()
-    options.headless = True
+    try:
+        proxy_type_map = {'http': '1', 'https': '1', 'socks4': '2', 'socks5': '2'}
+        proxy_type_value = proxy_type_map[args.type]
+        options = Options()
+        options.headless = True
 
-    driver = webdriver.Firefox(options=options)
-    driver.get('https://spys.one/aproxy/')
+        driver = webdriver.Firefox(options=options)
+        driver.get('https://spys.one/aproxy/')
 
-    # Select the option to show more proxies from the #xpp menu
-    select = Select(driver.find_element(By.CSS_SELECTOR, '#xpp'))
-    select.select_by_value('5')
+        # Select the option to show more proxies from the #xpp menu
+        select = Select(driver.find_element(By.CSS_SELECTOR, '#xpp'))
+        select.select_by_value('5')
 
-    # Wait for the page to reload
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')))
+        # Wait for the page to reload
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')))
 
-    # Select the desired proxy type from the #xf5 menu
-    select = Select(driver.find_element(By.CSS_SELECTOR, '#xf5'))
-    select.select_by_value(proxy_type_value)
+        # Select the desired proxy type from the #xf5 menu
+        select = Select(driver.find_element(By.CSS_SELECTOR, '#xf5'))
+        select.select_by_value(proxy_type_value)
 
-    # Wait for the page to reload
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')))
+        # Wait for the page to reload
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')))
 
-    # Wait for the JavaScript code to execute and generate the data
-    rows = driver.find_elements(By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')
+        # Wait for the JavaScript code to execute and generate the data
+        rows = driver.find_elements(By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')
 
-    for row in rows:
-        try:
-            ip_address_element = row.find_element(By.CSS_SELECTOR, 'td:nth-child(1) > font')
-            ip_address = ip_address_element.text.strip()
-            if not any(c.isalpha() for c in ip_address):
-                proxies.add(ip_address)
-        except:
-            pass
+        for row in rows:
+            try:
+                ip_address_element = row.find_element(By.CSS_SELECTOR, 'td:nth-child(1) > font')
+                ip_address = ip_address_element.text.strip()
+                if not any(c.isalpha() for c in ip_address):
+                    proxies.add(ip_address)
+            except:
+                pass
 
-    driver.quit()
+        driver.quit()
+    except Exception:
+        pass
 
 def check_proxies():
     while True:
-        if not proxies:
-            time.sleep(1)
-            continue
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {}
-            for proxy in random.sample(list(proxies), len(proxies)):
-                future = executor.submit(check_proxy, proxy, proxy_type)
-                futures[future] = proxy
-            
-            for future in as_completed(futures):
-                result = future.result()
-                if result is not None:
-                    proxy, rounded_resp_time, current_time = result
-                    alive_proxies_set.add(proxy)
-                    
-                    if args.db:
-                        conn = sqlite3.connect('data.db',timeout = 10)
-                        c = conn.cursor()
-                        c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
-                        c.execute('BEGIN')
-                        c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
+        try:
+            if not proxies:
+                time.sleep(1)
+                continue
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {}
+                for proxy in random.sample(list(proxies), len(proxies)):
+                    future = executor.submit(check_proxy, proxy, proxy_type)
+                    futures[future] = proxy
+                
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result is not None:
+                        proxy, rounded_resp_time, current_time = result
+                        alive_proxies_set.add(proxy)
                         
-                        c.execute('COMMIT')
-                        conn.close()
-                else:
-                    proxy = futures[future]
-                    proxies.discard(proxy)
+                        if args.db:
+                            conn = sqlite3.connect('data.db',timeout = 10)
+                            c = conn.cursor()
+                            c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+                            c.execute('BEGIN')
+                            c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
+                            
+                            c.execute('COMMIT')
+                            conn.close()
+                    else:
+                        proxy = futures[future]
+                        proxies.discard(proxy)
+        except:
+            pass
                 
 def recheck_alive_proxies():
     while True:
