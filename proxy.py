@@ -1,32 +1,25 @@
 from ast import While
 from errno import EEXIST
 import requests
-import schedule
 import subprocess
 import threading
 import sqlite3
 import random
 import time
 import os
+import re
 import logging
 import argparse
 import json
 import socks
 import socket
 import urllib.request
-import selenium
-from typing import Optional
 from datetime import datetime
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import Select
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.firefox.options import Options
+
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
@@ -48,9 +41,7 @@ logging.basicConfig(level=logging.INFO)
 # Clear the screen
 os.system('cls' if os.name == 'nt' else 'clear')
 
-# Set the maximum number of open file descriptors to 4000
 os.system('ulimit -n 50000')
-os.system('rm geckodriver.log')
 
 
 # Set the API URL for retrieving proxies based on the command line arguments or use the default URL if not specified
@@ -100,7 +91,6 @@ while True:
 
 
 # Define a function to check a single proxy by making a request to https://httpbin.org/ip using the proxy and measuring the response time.
-
 def check_proxy(proxy, proxy_type):
 
     while True:
@@ -183,8 +173,7 @@ def get_proxies():
 
         # Define additional sources for retrieving proxies.
         additional_sources = [
-            f"https://www.proxyscan.io/api/proxy?format=txt&limit=100&type={args.type}&uptime=20&ping={args.p}",
-            f"https://www.proxy-list.download/api/v1/get?type={args.type}"
+            f"https://www.proxy-list.download/api/v1/get?type={args.type}",
         ]
         # Try to retrieve proxies from each additional source.
         for source in additional_sources:
@@ -198,45 +187,8 @@ def get_proxies():
     except:
         pass
 
-def update_proxies():
-    try:
-        proxy_type_map = {'http': '1', 'https': '1', 'socks4': '2', 'socks5': '2'}
-        proxy_type_value = proxy_type_map[args.type]
-        options = Options()
-        options.headless = True
 
-        driver = webdriver.Firefox(options=options)
-        driver.get('https://spys.one/aproxy/')
 
-        # Select the option to show more proxies from the #xpp menu
-        select = Select(driver.find_element(By.CSS_SELECTOR, '#xpp'))
-        select.select_by_value('5')
-
-        # Wait for the page to reload
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')))
-
-        # Select the desired proxy type from the #xf5 menu
-        select = Select(driver.find_element(By.CSS_SELECTOR, '#xf5'))
-        select.select_by_value(proxy_type_value)
-
-        # Wait for the page to reload
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')))
-
-        # Wait for the JavaScript code to execute and generate the data
-        rows = driver.find_elements(By.CSS_SELECTOR, 'body > table:nth-child(3) > tbody > tr:nth-child(3) > td > table > tbody > tr')
-
-        for row in rows:
-            try:
-                ip_address_element = row.find_element(By.CSS_SELECTOR, 'td:nth-child(1) > font')
-                ip_address = ip_address_element.text.strip()
-                if not any(c.isalpha() for c in ip_address):
-                    proxies.add(ip_address)
-            except:
-                pass
-
-        driver.quit()
-    except Exception:
-        pass
 
 def check_proxies():
     while True:
@@ -444,18 +396,15 @@ if __name__ == "__main__":
     t3 = threading.Thread(target=run_thread, args=(track_proxies, 10))
     t4 = threading.Thread(target=run_thread, args=(write_alive_proxies_to_file, 2))
     t5 = threading.Thread(target=recheck_alive_proxies)
-    t6 = threading.Thread(target=run_thread, args=(update_proxies, 15))
     
     t1.start()
     t2.start()
     t3.start()
     t4.start()
     t5.start()
-    t6.start()
 
-    t1.join()
+    #t1.join()
     t2.join()
-    t3.join()
-    t4.join()
+    #t3.join()
+    #t4.join()
     t5.join()
-    t6.join()
