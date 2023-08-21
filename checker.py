@@ -2,6 +2,9 @@ import os
 import time
 import socks
 import socket
+import pycurl
+import re
+from io import BytesIO
 import json
 import random
 import sqlite3
@@ -12,6 +15,7 @@ import threading
 import subprocess
 import urllib.request
 import concurrent.futures
+from tqdm import tqdm
 from datetime import datetime
 from contextlib import closing
 import xml.etree.ElementTree as ET
@@ -25,11 +29,14 @@ parser.add_argument('-clean', action='store_true', help='clean old unavailible p
 parser.add_argument('-scan', action='store_true', help='check scan results and clear "scan_results" table in db')
 parser.add_argument('-type', type=str, default= None, choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-mass', type=str, help='Absolute path to the masscan XML file')
+parser.add_argument('-list', action='store_true', help='use targets.txt as source')
+
 parser.add_argument('-w', type=int, default=50, help='number of worker threads to use when checking proxies')
 parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
 args = parser.parse_args()
 
 os.system('ulimit -n 4000')
+os.system('cls' if os.name == 'nt' else 'clear')
 
 if args.type:
     proxy_types = args.type
@@ -81,8 +88,6 @@ while True:
     except Exception as e:
         print(f' Connection error: {e}. Retrying in 5 seconds...',end="\r")
         time.sleep(5)
-
-os.system('cls' if os.name == 'nt' else 'clear')
 
 def check_proxy(proxy, proxy_type):
 
@@ -190,6 +195,51 @@ if __name__ == '__main__':
             port = host.find('ports').find('port').get('portid')
             ip_port = f"{address}:{port}"
             ip_ports.add(ip_port)
+    if args.list:
+
+        urls = [
+            "https://github.com/TheSpeedX/PROXY-List/blob/master/socks5.txt",
+            "https://github.com/TheSpeedX/PROXY-List/blob/master/socks4.txt",
+            "https://github.com/TheSpeedX/PROXY-List/blob/master/http.txt",
+            "https://github.com/monosans/proxy-list/blob/main/proxies/http.txt",
+            "https://github.com/monosans/proxy-list/blob/main/proxies/socks4.txt",
+            "https://github.com/monosans/proxy-list/blob/main/proxies/socks5.txt",
+            "https://github.com/hookzof/socks5_list/blob/master/proxy.txt",
+            "https://github.com/mmpx12/proxy-list/blob/master/http.txt",
+            "https://github.com/mmpx12/proxy-list/blob/master/https.txt",
+            "https://github.com/mmpx12/proxy-list/blob/master/socks4.txt",
+            "https://github.com/mmpx12/proxy-list/blob/master/socks5.txt",
+            "https://github.com/zevtyardt/proxy-list/blob/main/all.txt",
+            "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/http.txt",
+            "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks4.txt",
+            "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt",
+            "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
+            "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/https.txt",
+            "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/socks4.txt",
+            "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/socks5.txt",
+            "https://github.com/proxy4parsing/proxy-list/blob/main/http.txt"
+        ]
+
+        proxies = set()
+        pattern = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b")
+
+        for url in urls:
+            response = requests.get(url)
+            if response.status_code == 200:
+                proxies.update(response.text.splitlines())
+
+        with open("targets.txt", "w") as f:
+            for proxy in proxies:
+                for match in pattern.findall(proxy):
+                    f.write(match + "\n")
+        
+
+        with open('targets.txt', 'r') as f:
+            for line in f:
+                address, port = line.strip().split(':')
+                ip_port = f"{address}:{port}"
+                ip_ports.add(ip_port)
+
     if args.db:
         if args.type:
             proxy_types = [args.type]
@@ -241,7 +291,6 @@ if __name__ == '__main__':
                                 conn.commit()
         all_checked_proxies[proxy_type] = sorted(checked_proxies, key=lambda x: x[1])
 
-        os.system('cls' if os.name == 'nt' else 'clear')
         for proxy_type, checked_proxies in all_checked_proxies.items():
             for checked_proxy in checked_proxies:
                 rounded_resp_time = round(checked_proxy[1], 2)
