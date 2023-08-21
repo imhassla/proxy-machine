@@ -1,5 +1,5 @@
-from ast import While
-from errno import EEXIST
+#from ast import While
+#from errno import EEXIST
 import requests
 import subprocess
 import threading
@@ -7,7 +7,7 @@ import sqlite3
 import random
 import time
 import os
-import re
+#import re
 import logging
 import argparse
 import json
@@ -15,7 +15,6 @@ import socks
 import socket
 import urllib.request
 from datetime import datetime
-from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
@@ -57,7 +56,6 @@ proxies = set()
 alive_proxies_set = set()
 checked_filename = "last_checked.txt"
 top10_filename = "top10.txt"
-file_lock = Lock()
 proxy_stats = {}
 proxy_type = args.type
 if args.scan:
@@ -191,7 +189,7 @@ def check_proxies():
             if not proxies:
                 time.sleep(1)
                 continue
-            with ThreadPoolExecutor(max_workers=workers) as executor:
+            with ThreadPoolExecutor(max_workers=workers/2) as executor:
                 futures = {}
                 for proxy in random.sample(list(proxies), len(proxies)):
                     future = executor.submit(check_proxy, proxy, proxy_type)
@@ -220,31 +218,38 @@ def check_proxies():
                 
 def recheck_alive_proxies():
     while True:
-        # Create a copy of the set of alive proxies
-        alive_proxies = set(alive_proxies_set)
+        try:
+            # Create a copy of the set of alive proxies
+            alive_proxies = set(alive_proxies_set)
 
-        # Use a ThreadPoolExecutor to check all of the alive proxies concurrently using multiple worker threads.
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {}
-            for proxy in alive_proxies:
-                future = executor.submit(check_proxy, proxy, proxy_type)
-                futures[future] = proxy
+            # Use a ThreadPoolExecutor to check all of the alive proxies concurrently using multiple worker threads.
+            with ThreadPoolExecutor(max_workers=workers/2) as executor:
+                futures = {}
+                for proxy in alive_proxies:
+                    future = executor.submit(check_proxy, proxy, proxy_type)
+                    futures[future] = proxy
+                
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result is None:
+                        proxy = futures[future]
+                        # If a proxy check was not successful, remove it from the set of alive proxies in memory.
+                        alive_proxies_set.discard(proxy)
             
-            for future in as_completed(futures):
-                result = future.result()
-                if result is None:
-                    proxy = futures[future]
-                    # If a proxy check was not successful, remove it from the set of alive proxies in memory.
-                    alive_proxies_set.discard(proxy)
-        
-        # Sleep for 10 seconds before rechecking the proxies again.
-        time.sleep(10)
+            # Sleep for 10 seconds before rechecking the proxies again.
+            time.sleep(10)
+        except:
+            pass
 
 def write_alive_proxies_to_file():
-    # Write the list of alive proxies to the checked_filename file.
-    with file_lock, open(checked_filename, "w") as f:
-        for proxy in alive_proxies_set:
-            f.write(proxy + "\n")
+    try:
+        # Write the list of alive proxies to the checked_filename file.
+        with open(checked_filename, "w") as f:
+            for proxy in alive_proxies_set:
+                f.write(proxy + "\n")
+    except:
+        pass
+
     
 def track_proxies():
     checked_proxies = alive_proxies_set.copy()
@@ -384,7 +389,7 @@ def run_thread(func, interval):
 
 if __name__ == "__main__":
     # Create and start threads for each of the functions
-    t1 = threading.Thread(target=run_thread, args=(get_proxies, 10))
+    t1 = threading.Thread(target=run_thread, args=(get_proxies, 15))
     t2 = threading.Thread(target=check_proxies)
     t3 = threading.Thread(target=run_thread, args=(track_proxies, 10))
     t4 = threading.Thread(target=run_thread, args=(write_alive_proxies_to_file, 2))
@@ -396,8 +401,8 @@ if __name__ == "__main__":
     t4.start()
     t5.start()
 
-    #t1.join()
+    t1.join()
     t2.join()
-    #t3.join()
-    #t4.join()
+    t3.join()
+    t4.join()
     t5.join()
