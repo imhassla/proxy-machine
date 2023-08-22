@@ -18,7 +18,7 @@ from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
-parser.add_argument('-p', type=int, default=3000, help='ping (ms.) of the proxy server. (for default providers only)')
+parser.add_argument('-p', type=int, default=4000, help='ping (ms.) of the proxy server. (for default providers only)')
 parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
 parser.add_argument('-w', type=int, default=100, help='number of worker threads to use when checking proxies')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
@@ -225,11 +225,9 @@ def write_alive_proxies_to_file():
                 f.write(proxy + "\n")
     except:
         pass
-
     
 def track_proxies():
     checked_proxies = alive_proxies_set.copy()
-
     # For each checked proxy, increment its count in the proxy_stats dictionary. If it is not already present in the dictionary, add it with an initial count of 1.
     for proxy in checked_proxies:
         if proxy not in proxy_stats:
@@ -239,7 +237,6 @@ def track_proxies():
         # If the proxy was previously absent, remove it from the proxy_absence_count dictionary.
         if proxy in proxy_absence_count:
             del proxy_absence_count[proxy]
-
     # Find any proxies that were previously present in the proxy_stats dictionary but are no longer available (checked).
     absent_proxies = set(proxy_stats.keys()) - checked_proxies
     # For each absent proxy, increment its count in the proxy_absence_count dictionary. If it is not already present in the dictionary, add it with an initial count of 1.
