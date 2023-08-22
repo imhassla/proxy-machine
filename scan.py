@@ -27,7 +27,7 @@ num_threads = args.w
 
 if not args.machine:
     # Start proxy.py script in the background
-    proxy_process = subprocess.Popen(["python3", "proxy.py", "-type", "socks4", "-l 35", "-p 1500"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proxy_process = subprocess.Popen(["python3", "proxy.py", "-type", "socks4", "-p 1500"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def cleanup():
     if not args.machine:
@@ -147,7 +147,6 @@ def scan(host, port):
             continue
 
 def scan_ips(max_threads=num_threads):
-
     try:
         ips = get_ip_ranges()
         scanned = set()

@@ -14,6 +14,9 @@ import concurrent.futures
 from datetime import datetime
 from contextlib import closing
 import xml.etree.ElementTree as ET
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script checks uniq ip:port combinations from scan_results/ directory as http, https, socks4, socks5 proxies. ')
@@ -30,7 +33,7 @@ parser.add_argument('-w', type=int, default=50, help='number of worker threads t
 parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
 args = parser.parse_args()
 
-os.system('ulimit -n 4000')
+os.system('ulimit -n 40000')
 os.system('cls' if os.name == 'nt' else 'clear')
 
 if args.type:
@@ -71,7 +74,6 @@ if args.ping:
 # Get the user's IP address 
 while True:
     try:
-        # Get the user's IP address 
         url = 'https://httpbin.org/ip'
         opener = urllib.request.build_opener()
         urllib.request.install_opener(opener)
@@ -147,17 +149,10 @@ def check_proxy(proxy, proxy_type):
                         return None
                     else:
                         return (f'{proxy_host}:{proxy_port}', rounded_resp_time) 
-                    
-        except (Exception) as e:
-            #print(f'Error checking {proxy} as {proxy_type}: {e}')
-            if args.ping:
-                print(" Proxy Checks in progress... ping:",response_time, 'ms.', end="\r")
-            else:
-                print(" Proxy Checks in progress... (use '-ping' agrument to check connetction latency)",end="\r")
+        except:
             socks.set_default_proxy()
             pass
         return None
-
 
 def get_db_connection():
     conn = sqlite3.connect('data.db', timeout=10)
@@ -205,9 +200,6 @@ if __name__ == '__main__':
             "https://github.com/mmpx12/proxy-list/blob/master/socks4.txt",
             "https://github.com/mmpx12/proxy-list/blob/master/socks5.txt",
             "https://github.com/zevtyardt/proxy-list/blob/main/all.txt",
-            "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/http.txt",
-            "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks4.txt",
-            "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt",
             "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
             "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/https.txt",
             "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/socks4.txt",
@@ -218,12 +210,28 @@ if __name__ == '__main__':
             "https://github.com/roosterkid/openproxylist/blob/main/SOCKS5_RAW.txt",
             "https://github.com/ALIILAPRO/Proxy/blob/main/http.txt",
             "https://github.com/ALIILAPRO/Proxy/blob/main/socks4.txt",
-            "https://github.com/ALIILAPRO/Proxy/blob/main/socks5.txt"
+            "https://github.com/ALIILAPRO/Proxy/blob/main/socks5.txt",
+            "https://github.com/ErcinDedeoglu/proxies/blob/main/proxies/http.txt",
+            "https://github.com/ErcinDedeoglu/proxies/blob/main/proxies/https.txt",
+            "https://github.com/ErcinDedeoglu/proxies/blob/main/proxies/socks4.txt",
+            "https://github.com/ErcinDedeoglu/proxies/blob/main/proxies/socks5.txt",
+            "https://github.com/prxchk/proxy-list/blob/main/http.txt",
+            "https://github.com/prxchk/proxy-list/blob/main/socks4.txt",
+            "https://github.com/prxchk/proxy-list/blob/main/socks5.txt",
+            "https://github.com/saisuiu/Lionkings-Http-Proxys-Proxies/blob/main/free.txt",
+            "https://github.com/ObcbO/getproxy/blob/master/http.txt",
+            "https://github.com/ObcbO/getproxy/blob/master/https.txt",
+            "https://github.com/ObcbO/getproxy/blob/master/socks4.txt",
+            "https://github.com/ObcbO/getproxy/blob/master/socks5.txt",
+            "https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/http_proxies.txt",
+            "https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/https_proxies.txt",
+            "https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/socks4_proxies.txt",
+            "https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/socks5_proxies.txt",
         ]
 
         proxies = set()
         pattern = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b")
-
+        print('Getting targets list...')
         for url in urls:
             response = requests.get(url)
             if response.status_code == 200:
@@ -234,7 +242,6 @@ if __name__ == '__main__':
                 for match in pattern.findall(proxy):
                     f.write(match + "\n")
         
-
         with open('targets.txt', 'r') as f:
             for line in f:
                 address, port = line.strip().split(':')
@@ -268,7 +275,7 @@ if __name__ == '__main__':
         proxy_types = [args.type]
     else:
         proxy_types = ['http', 'https', 'socks4', 'socks5']
-
+    print('Checks in pgogress...')
     for proxy_type in proxy_types:
         checked_proxies = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.w) as executor:

@@ -1,5 +1,3 @@
-#from ast import While
-#from errno import EEXIST
 import requests
 import subprocess
 import threading
@@ -8,7 +6,6 @@ import random
 import time
 import os
 #import re
-import logging
 import argparse
 import json
 import socks
@@ -18,12 +15,15 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
 parser.add_argument('-p', type=int, default=3000, help='ping (ms.) of the proxy server. (for default providers only)')
-parser.add_argument('-t', type=int, default=6, help='timeout (s.) of checker')
+parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
 parser.add_argument('-w', type=int, default=100, help='number of worker threads to use when checking proxies')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-top', action='store_true', help='If specified, store top 10 proxies in file')
@@ -33,8 +33,7 @@ parser.add_argument('-db', action='store_true', help='store checked proxies in d
 parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies from')
 args = parser.parse_args()
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+
 
 # Clear the screen
 os.system('cls' if os.name == 'nt' else 'clear')
@@ -87,11 +86,8 @@ while True:
         time.sleep(5)
 
 
-# Define a function to check a single proxy by making a request to https://httpbin.org/ip using the proxy and measuring the response time.
 def check_proxy(proxy, proxy_type):
-
     while True:
-        # Initialize an empty dictionary to store the proxy settings for HTTP and HTTPS requests.
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         try:
 
@@ -149,21 +145,17 @@ def check_proxy(proxy, proxy_type):
             pass
         return None
         
-
 def get_proxies():
     try:
         # Reset the default proxy settings.
         socks.set_default_proxy()
-        
         # Try to retrieve proxies from the API URL specified by the command line arguments or the default API URL.
         try:
             response = requests.get(api_url)
             new_proxies = set(response.text.splitlines())
             proxies.update(new_proxies - proxies)
-        except requests.exceptions.RequestException as e:
-            #logging.error(f"An error occurred while getting proxies: {e}")
+        except:
             pass
-
         # Define additional sources for retrieving proxies.
         additional_sources = [
             f"https://www.proxy-list.download/api/v1/get?type={args.type}",
@@ -174,14 +166,10 @@ def get_proxies():
                 response = requests.get(source)
                 new_proxies = set(response.text.splitlines())
                 proxies.update(new_proxies - proxies)
-            except requests.exceptions.RequestException as e:
-                #logging.error(f"An error occurred while getting proxies from {source}: {e}")
+            except:
                 pass
     except:
         pass
-
-
-
 
 def check_proxies():
     while True:
@@ -207,7 +195,6 @@ def check_proxies():
                             c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
                             c.execute('BEGIN')
                             c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
-                            
                             c.execute('COMMIT')
                             conn.close()
                     else:
