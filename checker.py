@@ -14,9 +14,6 @@ import concurrent.futures
 from datetime import datetime
 from contextlib import closing
 import xml.etree.ElementTree as ET
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
-
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script checks uniq ip:port combinations from scan_results/ directory as http, https, socks4, socks5 proxies. ')
@@ -241,7 +238,13 @@ if __name__ == '__main__':
             for proxy in proxies:
                 for match in pattern.findall(proxy):
                     f.write(match + "\n")
-        
+        with open('targets.txt', 'r') as file:
+            lines = file.readlines()
+            unique_lines = list(set(lines))
+            unique_lines.sort(key=lines.index)
+        with open('targets.txt', 'w+') as file:
+            for line in unique_lines:
+                file.write(line)
         with open('targets.txt', 'r') as f:
             for line in f:
                 address, port = line.strip().split(':')

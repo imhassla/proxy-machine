@@ -7,7 +7,6 @@ import time
 import os
 import argparse
 import json
-import ssl
 import socks
 import socket
 import urllib.request
@@ -43,7 +42,6 @@ else:
 proxies = set()
 alive_proxies_set = set()
 semaphore = threading.Semaphore(args.sw) 
-ssl._create_default_https_context = ssl._create_unverified_context
 checked_filename = "last_checked.txt"
 top10_filename = "top10.txt"
 proxy_stats = {}
@@ -342,8 +340,11 @@ if args.scan:
 def run_thread(func, interval):
     # Run the given function at the specified interval
     while True:
-        func()   
-        time.sleep(interval)
+        try:
+            func()   
+            time.sleep(interval)
+        except:
+            pass
 
 if __name__ == "__main__":
     # Create and start threads for each of the functions
@@ -359,8 +360,4 @@ if __name__ == "__main__":
     t4.start()
     t5.start()
 
-    t1.join()
-    t2.join()
-    t3.join()
-    t4.join()
     t5.join()
