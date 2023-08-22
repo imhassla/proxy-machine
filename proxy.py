@@ -5,9 +5,9 @@ import sqlite3
 import random
 import time
 import os
-#import re
 import argparse
 import json
+import ssl
 import socks
 import socket
 import urllib.request
@@ -15,10 +15,6 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
-
-
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
@@ -33,13 +29,9 @@ parser.add_argument('-db', action='store_true', help='store checked proxies in d
 parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies from')
 args = parser.parse_args()
 
-
-
 # Clear the screen
 os.system('cls' if os.name == 'nt' else 'clear')
-
 os.system('ulimit -n 50000')
-
 
 # Set the API URL for retrieving proxies based on the command line arguments or use the default URL if not specified
 if args.url:
@@ -47,16 +39,17 @@ if args.url:
 else:
     api_url = f"https://api.proxyscrape.com/v2/?request=displayproxies&protocol={args.type}&timeout={args.p}&country=all&ssl=all&anonymity=all"
 
-t = args.t
-workers = args.w
-
 # Initialize a set to store the proxies and other variables for tracking proxy statistics and availability
 proxies = set()
 alive_proxies_set = set()
+semaphore = threading.Semaphore(args.sw) 
+ssl._create_default_https_context = ssl._create_unverified_context
 checked_filename = "last_checked.txt"
 top10_filename = "top10.txt"
 proxy_stats = {}
 proxy_type = args.type
+t = args.t
+workers = args.w
 if args.scan:
     proxy_type = 'socks4'
 proxy_absence_count = {}
@@ -85,14 +78,11 @@ while True:
         print(f' Connection error: {e}. Retrying in 5 seconds...',end="\r")
         time.sleep(5)
 
-
 def check_proxy(proxy, proxy_type):
     while True:
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         try:
-
             proxy_host, proxy_port = proxy.split(':')
-
             if proxy_type == 'http':
                 proxy = urllib.request.ProxyHandler({
                     'http': f'http://{proxy_host}:{proxy_port}'
@@ -109,7 +99,6 @@ def check_proxy(proxy, proxy_type):
             elif proxy_type == 'socks5':
                 socks.set_default_proxy(socks.SOCKS5, proxy_host, int(proxy_port))
                 socket.socket = socks.socksocket
-
             if proxy_type == 'http' or proxy_type == 'https':
                 opener = urllib.request.build_opener(proxy)
                 urllib.request.install_opener(opener)
@@ -124,12 +113,10 @@ def check_proxy(proxy, proxy_type):
                     return None
                 else:
                     return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time)               
-
             if proxy_type == 'socks4' or proxy_type == 'socks5':
                 # Make a request to https://httpbin.org/ip using the specified proxy settings and measure the response time.
                 url = 'https://httpbin.org/ip'
                 r = requests.get(url, timeout=args.t)
-            
                 # If the request was successful and the returned IP address is different from the user's IP address, return the proxy and response time.
                 if r.status_code == 200:
                     response_time = r.elapsed.total_seconds()
@@ -139,8 +126,7 @@ def check_proxy(proxy, proxy_type):
                         return None
                     else:
                         return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time) 
-                    
-        except (Exception) as e:
+        except:
             socks.set_default_proxy()
             pass
         return None
@@ -168,6 +154,14 @@ def get_proxies():
                 proxies.update(new_proxies - proxies)
             except:
                 pass
+        # If the args.db argument is specified, retrieve proxies from the database.
+        if args.db:
+            conn = sqlite3.connect('data.db', timeout=10)
+            c = conn.cursor()
+            c.execute(f"SELECT proxy FROM {args.type} WHERE response_time <= {args.t}")
+            new_proxies = set([row[0] for row in c.fetchall()])
+            proxies.update(new_proxies - proxies)
+            conn.close()
     except:
         pass
 
@@ -182,13 +176,11 @@ def check_proxies():
                 for proxy in random.sample(list(proxies), len(proxies)):
                     future = executor.submit(check_proxy, proxy, proxy_type)
                     futures[future] = proxy
-                
                 for future in as_completed(futures):
                     result = future.result()
                     if result is not None:
                         proxy, rounded_resp_time, current_time = result
                         alive_proxies_set.add(proxy)
-                        
                         if args.db:
                             conn = sqlite3.connect('data.db',timeout = 10)
                             c = conn.cursor()
@@ -208,21 +200,18 @@ def recheck_alive_proxies():
         try:
             # Create a copy of the set of alive proxies
             alive_proxies = set(alive_proxies_set)
-
             # Use a ThreadPoolExecutor to check all of the alive proxies concurrently using multiple worker threads.
             with ThreadPoolExecutor(max_workers=workers/2) as executor:
                 futures = {}
                 for proxy in alive_proxies:
                     future = executor.submit(check_proxy, proxy, proxy_type)
                     futures[future] = proxy
-                
                 for future in as_completed(futures):
                     result = future.result()
                     if result is None:
                         proxy = futures[future]
                         # If a proxy check was not successful, remove it from the set of alive proxies in memory.
                         alive_proxies_set.discard(proxy)
-            
             # Sleep for 10 seconds before rechecking the proxies again.
             time.sleep(10)
         except:
@@ -263,15 +252,12 @@ def track_proxies():
         if proxy_absence_count[proxy] > 0:
             del proxy_stats[proxy]
             del proxy_absence_count[proxy]
-
     # Sort the list of proxies by their uptime (count) and get the top 10 proxies.
     top_10_proxies = sorted(proxy_stats.items(), key=lambda x: x[1], reverse=True)[:10]
-    
     # Create a list of strings to display information about the top 10 proxies by uptime.
     output_strs = [f"\033[1;36mTop {args.type} proxies by availability time:\033[0m\n"]
     for i, (proxy, count) in enumerate(top_10_proxies):
         output_strs.append(f"\033[1;33m{i+1}.\033[0m {proxy} \033[32malive for {round(count/6, 2)} min.\033[0m")
-    
     output_strs.append("")
     output_str = "\n".join(output_strs)
     
@@ -280,16 +266,13 @@ def track_proxies():
 
     print(f"proxies in memory:\033[1m\033[31m {len(proxies)}\033[0m")
     print(f"proxies in {checked_filename}: \033[1m\033[32m {len(checked_proxies)}\033[0m\n")
-
     print(output_str)
 
     # If the --top command line argument was specified, write the top 10 proxies to a file (top10.txt).
     if args.top:
         if not os.path.exists(top10_filename):
             open(top10_filename, "w").close()
-
         file_output_str = "\n".join([proxy[0] for proxy in top_10_proxies])
-        
         with open(top10_filename, "w") as f:
             f.write(file_output_str)
 
@@ -305,22 +288,18 @@ def get_ip_ranges():
         ports.add(port)
     return ip_ranges, ports
 
-semaphore = threading.Semaphore(args.sw)
-
 def run_scan(ip_range, ports):
     # Acquire the semaphore before starting the scan
     semaphore.acquire()
     try:
         # Convert the list of ports to a list of strings
         ports_str = [str(port) for port in ports]
-        
         # Start the scan.py script as a subprocess
         process = subprocess.Popen(
             ['python3', 'scan.py', '-ping', '-machine', '-range', ip_range, '-port', *ports_str],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
-        
         try:
             # Wait for the subprocess to finish
             process.wait()
@@ -340,19 +319,15 @@ def scan_ip_ranges():
     while True:
         # Get the list of IP ranges and ports
         ip_ranges, ports = get_ip_ranges()
-        
         # Convert the set of ports to a list
         ports = list(ports)
-        
         # Keep track of the scanned IP ranges
         scanned_ip_ranges = set()
-        
         # Check if ip_ranges or ports are empty
         while not ip_ranges or not ports:
             # Retry getting the list of IP ranges and ports
             ip_ranges, ports = get_ip_ranges()
             time.sleep(5)
-        
         with ThreadPoolExecutor() as executor:
             while ip_ranges:
                 # Submit a task to the executor for each IP range
@@ -360,7 +335,6 @@ def scan_ip_ranges():
                     if ip_range not in scanned_ip_ranges:
                         executor.submit(run_scan, ip_range, ports)
                         scanned_ip_ranges.add(ip_range)
-                
                 # Get the updated list of IP ranges
                 ip_ranges, ports = get_ip_ranges()
 
