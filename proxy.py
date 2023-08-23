@@ -1,15 +1,13 @@
-import requests
 import subprocess
 import threading
+import requests
 import sqlite3
 import random
 import time
 import os
 import argparse
-import json
 import socks
 import socket
-import urllib.request
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor
@@ -43,7 +41,6 @@ proxies = set()
 alive_proxies_set = set()
 semaphore = threading.Semaphore(args.sw) 
 checked_filename = "last_checked.txt"
-top10_filename = "top10.txt"
 proxy_stats = {}
 proxy_type = args.type
 t = args.t
@@ -63,13 +60,9 @@ for i in txt:
 # Get the user's IP address 
 while True:
     try:
-        # Get the user's IP address 
         url = 'https://httpbin.org/ip'
-        opener = urllib.request.build_opener()
-        urllib.request.install_opener(opener)
-        response = urllib.request.urlopen(url)
-        data = response.read().decode('utf-8')
-        data = json.loads(data)
+        response = requests.get(url)
+        data = response.json()
         sip = data.get('origin')
         break
     except Exception as e:
@@ -77,58 +70,65 @@ while True:
         time.sleep(5)
 
 def check_proxy(proxy, proxy_type):
-    while True:
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        try:
-            proxy_host, proxy_port = proxy.split(':')
-            if proxy_type == 'http':
-                proxy = urllib.request.ProxyHandler({
-                    'http': f'http://{proxy_host}:{proxy_port}'
-                })
-                url = 'http://httpbin.org/ip'
-            elif proxy_type == 'https':
-                proxy = urllib.request.ProxyHandler({
-                    'https': f'https://{proxy_host}:{proxy_port}'
-                })
-                url = 'https://httpbin.org/ip'
-            elif proxy_type == 'socks4':
+    # Get the current time
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        # Split the proxy into host and port
+        proxy_host, proxy_port = proxy.split(':')
+        # Set up the proxies dictionary and url based on the proxy type
+        if proxy_type == 'http':
+            proxies = {
+                'http': f'http://{proxy_host}:{proxy_port}'
+            }
+            url = 'http://httpbin.org/ip'
+        elif proxy_type == 'https':
+            proxies = {
+                'https': f'https://{proxy_host}:{proxy_port}'
+            }
+            url = 'https://httpbin.org/ip'
+        # Set up the default proxy for socks4 or socks5 using the socks module
+        elif proxy_type == 'socks4':
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 socks.set_default_proxy(socks.SOCKS4, proxy_host, int(proxy_port))
                 socket.socket = socks.socksocket
-            elif proxy_type == 'socks5':
+        elif proxy_type == 'socks5':
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 socks.set_default_proxy(socks.SOCKS5, proxy_host, int(proxy_port))
                 socket.socket = socks.socksocket
-            if proxy_type == 'http' or proxy_type == 'https':
-                opener = urllib.request.build_opener(proxy)
-                urllib.request.install_opener(opener)
-                start_time = time.time()
-                response = urllib.request.urlopen(url, timeout=args.t)
-                end_time = time.time()
-                response_time = end_time - start_time
+        # If the proxy type is http or https, use the requests module to send a request to the url using the proxies dictionary
+        if proxy_type == 'http' or proxy_type == 'https':
+            start_time = time.time()
+            response = requests.get(url, proxies=proxies, timeout=args.t)
+            end_time = time.time()
+            response_time = end_time - start_time
+            rounded_resp_time = round(response_time,2)
+            data = response.json()
+            # If the origin IP address in the response matches the user's IP address, return None
+            if any(origin == sip for origin in data.get('origin').split(', ')):
+                return None
+            # Otherwise, return the proxy, response time and current time
+            else:
+                return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time)               
+        # If the proxy type is socks4 or socks5, use the requests module to send a request to the url
+        if proxy_type == 'socks4' or proxy_type == 'socks5':
+            url = 'https://httpbin.org/ip'
+            r = requests.get(url, timeout=args.t)
+            # If the request was successful and the returned IP address is different from the user's IP address, return the proxy and response time
+            if r.status_code == 200:
+                response_time = r.elapsed.total_seconds()
                 rounded_resp_time = round(response_time,2)
-                data = response.read().decode('utf-8')
-                data = json.loads(data)
+                data = r.json()
                 if any(origin == sip for origin in data.get('origin').split(', ')):
                     return None
                 else:
-                    return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time)               
-            if proxy_type == 'socks4' or proxy_type == 'socks5':
-                # Make a request to https://httpbin.org/ip using the specified proxy settings and measure the response time.
-                url = 'https://httpbin.org/ip'
-                r = requests.get(url, timeout=args.t)
-                # If the request was successful and the returned IP address is different from the user's IP address, return the proxy and response time.
-                if r.status_code == 200:
-                    response_time = r.elapsed.total_seconds()
-                    rounded_resp_time = round(response_time,2)
-                    data = r.json()
-                    if any(origin == sip for origin in data.get('origin').split(', ')):
-                        return None
-                    else:
-                        return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time) 
-        except:
-            socks.set_default_proxy()
-            pass
-        return None
-        
+                    return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time) 
+    except:
+        # Reset the default proxy settings in case of an exception
+        socks.set_default_proxy()
+        pass
+    # Return None if an exception occurred or if the request was not successful
+    return None
+
 def get_proxies():
     try:
         # Reset the default proxy settings.
@@ -164,21 +164,29 @@ def get_proxies():
         pass
 
 def check_proxies():
+    # Infinite loop to check proxies stored in memory
     while True:
         try:
+            # If the proxies list is empty, wait for 1 second and continue the loop
             if not proxies:
                 time.sleep(1)
                 continue
+            # Use ThreadPoolExecutor for parallel proxy checking
             with ThreadPoolExecutor(max_workers=workers/2) as executor:
                 futures = {}
+                # Check each proxy in the proxies list
                 for proxy in random.sample(list(proxies), len(proxies)):
+                    # Submit the task of checking the proxy to the thread pool
                     future = executor.submit(check_proxy, proxy, proxy_type)
                     futures[future] = proxy
+                # Iterate over completed futures
                 for future in as_completed(futures):
                     result = future.result()
+                    # If the result is not None, the proxy is alive
                     if result is not None:
                         proxy, rounded_resp_time, current_time = result
                         alive_proxies_set.add(proxy)
+                        # If the database option is enabled, store the proxy information in the database
                         if args.db:
                             conn = sqlite3.connect('data.db',timeout = 10)
                             c = conn.cursor()
@@ -187,6 +195,7 @@ def check_proxies():
                             c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
                             c.execute('COMMIT')
                             conn.close()
+                    # If the result is None, the proxy is dead and should be removed from the proxies list
                     else:
                         proxy = futures[future]
                         proxies.discard(proxy)
@@ -262,14 +271,6 @@ def track_proxies():
     print(f"proxies in memory:\033[1m\033[31m {len(proxies)}\033[0m")
     print(f"proxies in {checked_filename}: \033[1m\033[32m {len(checked_proxies)}\033[0m\n")
     print(output_str)
-
-    # If the --top command line argument was specified, write the top 10 proxies to a file (top10.txt).
-    if args.top:
-        if not os.path.exists(top10_filename):
-            open(top10_filename, "w").close()
-        file_output_str = "\n".join([proxy[0] for proxy in top_10_proxies])
-        with open(top10_filename, "w") as f:
-            f.write(file_output_str)
 
 def get_ip_ranges():
     with open(checked_filename, 'r') as f:
