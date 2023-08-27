@@ -78,7 +78,6 @@ while True:
         print(f' Connection error: {e}. Retrying in 5 seconds...',end="\r")
         time.sleep(5)
 
-
 def check_proxy(proxy, proxy_type):
     # Get the current time
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
