@@ -57,8 +57,17 @@ runs proxy.py in background to retrieve socks4 proxies and perform port scan owe
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_scan.png)
 
-- `python3 checker.py -list` chech all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from open sources, print results and store in DB.
-- `python3 checker.py -ping -url 'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=all&timeout=300'` check API source list as all types of proxies, print results and store in DB.
+```bash
+python3 checker.py -list
+```
+chech all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from open sources, print results and store in DB.
+
+
+
+```bash
+python3 checker.py -ping -url 'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=all&timeout=300'
+```
+check API source list as all types of proxies, print results and store in DB.
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_checker.png)
 
