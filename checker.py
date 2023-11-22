@@ -31,8 +31,13 @@ args = parser.parse_args()
 os.system('ulimit -n 40000')
 os.system('cls' if os.name == 'nt' else 'clear')
 
+all_checked_proxies = {}
+
 if args.type:
-    proxy_types = args.type
+    if isinstance(args.type, str):
+        proxy_types = [args.type]
+    else:
+        proxy_types = list(args.type)
 else:
     proxy_types = ['http', 'https', 'socks4', 'socks5']
 
@@ -77,6 +82,9 @@ while True:
     except Exception as e:
         print(f' Connection error: {e}. Retrying in 5 seconds...',end="\r")
         time.sleep(5)
+
+
+
 
 def check_proxy(proxy, proxy_type):
     # Get the current time
@@ -136,7 +144,7 @@ def check_proxy(proxy, proxy_type):
         socks.set_default_proxy()
         pass
     # Return None if an exception occurred or if the request was not successful
-    return None
+    return None 
 
 def get_db_connection():
     conn = sqlite3.connect('data.db', timeout=10)
@@ -237,13 +245,18 @@ if __name__ == '__main__':
                 address, port = line.strip().split(':')
                 ip_port = f"{address}:{port}"
                 ip_ports.add(ip_port)
+    if args.scan:
+            with closing(get_db_connection()) as conn:
+                c = conn.cursor()
+                c.execute(f'''SELECT ip_port FROM {'_scan_results'}''')
+                rows = c.fetchall()
+                for row in rows:
+                    ip_ports.add(row[0])
+                conn.commit()
 
-    if args.db:
-        if args.type:
-            proxy_types = [args.type]
-        else:
-            proxy_types = ['http', 'https', 'socks4', 'socks5']
-        for proxy_type in proxy_types:
+
+    for proxy_type in proxy_types:
+        if args.db:
             with closing(get_db_connection()) as conn:
                 c = conn.cursor()
                 c.execute(f'''SELECT proxy FROM {proxy_type}''')
@@ -251,22 +264,8 @@ if __name__ == '__main__':
                 for row in rows:
                     ip_ports.add(row[0])
                 conn.commit()
-    if args.scan:
-        with closing(get_db_connection()) as conn:
-            c = conn.cursor()
-            c.execute(f'''SELECT ip_port FROM {'_scan_results'}''')
-            rows = c.fetchall()
-            for row in rows:
-                ip_ports.add(row[0])
-            conn.commit()
-
-    all_checked_proxies = {}
-    if args.type:
-        proxy_types = [args.type]
-    else:
-        proxy_types = ['http', 'https', 'socks4', 'socks5']
-    print('Checks in pgogress...')
-    for proxy_type in proxy_types:
+        
+        print(f'Checks {proxy_type} in progress...')
         checked_proxies = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.w) as executor:
             futures = [executor.submit(check_proxy, p, proxy_type) for p in ip_ports]
@@ -281,24 +280,23 @@ if __name__ == '__main__':
                                 c = conn.cursor()
                                 c.execute(f'''DELETE FROM {proxy_type} WHERE ip_port = ?''', (p,))
                                 conn.commit()
-                    if args.scan:
-                        for p in ip_ports:
-                            with closing(get_db_connection()) as conn:
-                                c = conn.cursor()
-                                c.execute(f'''DELETE FROM {'_scan_results'} WHERE ip_port = ?''', (p,))
-                                conn.commit()
+                        if args.scan:
+                            for p in ip_ports:
+                                with closing(get_db_connection()) as conn:
+                                    c = conn.cursor()
+                                    c.execute(f'''DELETE FROM {'_scan_results'} WHERE ip_port = ?''', (p,))
+                                    conn.commit()
         all_checked_proxies[proxy_type] = sorted(checked_proxies, key=lambda x: x[1])
 
-        for proxy_type, checked_proxies in all_checked_proxies.items():
-            for checked_proxy in checked_proxies:
-                rounded_resp_time = round(checked_proxy[1], 2)
-                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                with closing(get_db_connection()) as conn:
-                    c = conn.cursor()
-                    c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (checked_proxy[0], rounded_resp_time, current_time))
-                    print(f"{proxy_type} {checked_proxy[0]} {rounded_resp_time} s.")
-                    data_written = True
-                    conn.commit()                         
+    for proxy_type, checked_proxies in all_checked_proxies.items():
+        for checked_proxy in checked_proxies:
+            rounded_resp_time = round(checked_proxy[1], 2)
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with closing(get_db_connection()) as conn:
+                c = conn.cursor()
+                c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (checked_proxy[0], rounded_resp_time, current_time))
+                print(f"{proxy_type} {checked_proxy[0]} {rounded_resp_time} s.")
+                data_written = True
+                conn.commit()                         
     if not data_written:
         print('No proxy found')
-
