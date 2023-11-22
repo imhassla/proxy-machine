@@ -22,7 +22,7 @@ parser.add_argument('-clean', action='store_true', help='clean old unavailible p
 parser.add_argument('-scan', action='store_true', help='check scan results and clear "scan_results" table in db')
 parser.add_argument('-type', type=str, default= None, choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-mass', type=str, help='Absolute path to the masscan XML file')
-parser.add_argument('-list', action='store_true', help='use targets.txt as source')
+parser.add_argument('-list', action='store_true', help='chech all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from open sources')
 
 parser.add_argument('-w', type=int, default=50, help='number of worker threads to use when checking proxies')
 parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
