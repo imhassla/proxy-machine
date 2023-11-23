@@ -19,7 +19,7 @@ parser.add_argument('-p', type=int, default=4000, help='ping (ms.) of the proxy 
 parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
 parser.add_argument('-w', type=int, default=100, help='number of worker threads to use when checking proxies')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
-parser.add_argument('-top', action='store_true', help='If specified, store top 10 proxies in file')
+parser.add_argument('-api', action='store_true', help='If specified, dont track proxies ')
 parser.add_argument('-scan', action='store_true', help='If specified, perform scan.py for checked proxies ip ranges.')
 parser.add_argument('-sw', type=int, default=3, help='number of scanner workers threads')
 parser.add_argument('-db', action='store_true', help='store checked proxies in db')
@@ -30,19 +30,14 @@ args = parser.parse_args()
 os.system('cls' if os.name == 'nt' else 'clear')
 os.system('ulimit -n 50000')
 
-# Set the API URL for retrieving proxies based on the command line arguments or use the default URL if not specified
-if args.url:
-    api_url = args.url
-else:
-    api_url = f"https://api.proxyscrape.com/v2/?request=displayproxies&protocol={args.type}&timeout={args.p}&country=all&ssl=all&anonymity=all"
 
 # Initialize a set to store the proxies and other variables for tracking proxy statistics and availability
+proxy_type = args.type
 proxies = set()
 alive_proxies_set = set()
 semaphore = threading.Semaphore(args.sw) 
-checked_filename = "last_checked.txt"
 proxy_stats = {}
-proxy_type = args.type
+
 t = args.t
 workers = args.w
 if args.scan:
@@ -50,7 +45,13 @@ if args.scan:
 proxy_absence_count = {}
 process = None
 
-open(checked_filename, "w+").close()
+# Set the API URL for retrieving proxies based on the command line arguments or use the default URL if not specified
+if args.url:
+    api_url = args.url
+else:
+    api_url = f"https://api.proxyscrape.com/v2/?request=displayproxies&protocol={proxy_type}&timeout={args.p}&country=all&ssl=all&anonymity=all"
+
+
 # Print a message indicating that data is being retrieved from sources and primary proxy checks are being performed
 txt = '\033[1;36mGetting data from sources and primary proxy checks. \nStatistics will be displayed soon...\033[0m'
 for i in txt:  
@@ -98,7 +99,7 @@ def check_proxy(proxy, proxy_type):
         # If the proxy type is http or https, use the requests module to send a request to the url using the proxies dictionary
         if proxy_type == 'http' or proxy_type == 'https':
             start_time = time.time()
-            response = requests.get(url, proxies=proxies, timeout=args.t)
+            response = requests.get(url, proxies=proxies, timeout=t)
             end_time = time.time()
             response_time = end_time - start_time
             rounded_resp_time = round(response_time,2)
@@ -112,7 +113,7 @@ def check_proxy(proxy, proxy_type):
         # If the proxy type is socks4 or socks5, use the requests module to send a request to the url
         if proxy_type == 'socks4' or proxy_type == 'socks5':
             url = 'https://httpbin.org/ip'
-            r = requests.get(url, timeout=args.t)
+            r = requests.get(url, timeout=t)
             # If the request was successful and the returned IP address is different from the user's IP address, return the proxy and response time
             if r.status_code == 200:
                 response_time = r.elapsed.total_seconds()
@@ -142,7 +143,7 @@ def get_proxies():
             pass
         # Define additional sources for retrieving proxies.
         additional_sources = [
-            f"https://www.proxy-list.download/api/v1/get?type={args.type}",
+            f"https://www.proxy-list.download/api/v1/get?type={proxy_type}",
         ]
         # Try to retrieve proxies from each additional source.
         for source in additional_sources:
@@ -156,7 +157,7 @@ def get_proxies():
         if args.db:
             conn = sqlite3.connect('data.db', timeout=10)
             c = conn.cursor()
-            c.execute(f"SELECT proxy FROM {args.type} WHERE response_time <= {args.t}")
+            c.execute(f"SELECT proxy FROM {proxy_type} WHERE response_time <= {t}")
             new_proxies = set([row[0] for row in c.fetchall()])
             proxies.update(new_proxies - proxies)
             conn.close()
@@ -224,14 +225,6 @@ def recheck_alive_proxies():
         except:
             pass
 
-def write_alive_proxies_to_file():
-    try:
-        # Write the list of alive proxies to the checked_filename file.
-        with open(checked_filename, "w") as f:
-            for proxy in alive_proxies_set:
-                f.write(proxy + "\n")
-    except:
-        pass
     
 def track_proxies():
     checked_proxies = alive_proxies_set.copy()
@@ -259,7 +252,7 @@ def track_proxies():
     # Sort the list of proxies by their uptime (count) and get the top 10 proxies.
     top_10_proxies = sorted(proxy_stats.items(), key=lambda x: x[1], reverse=True)[:10]
     # Create a list of strings to display information about the top 10 proxies by uptime.
-    output_strs = [f"\033[1;36mTop {args.type} proxies by availability time:\033[0m\n"]
+    output_strs = [f"\033[1;36mTop {proxy_type} proxies by availability time:\033[0m\n"]
     for i, (proxy, count) in enumerate(top_10_proxies):
         output_strs.append(f"\033[1;33m{i+1}.\033[0m {proxy} \033[32malive for {round(count/6, 2)} min.\033[0m")
     output_strs.append("")
@@ -269,12 +262,10 @@ def track_proxies():
     os.system('cls' if os.name == 'nt' else 'clear')
 
     print(f"proxies in memory:\033[1m\033[31m {len(proxies)}\033[0m")
-    print(f"proxies in {checked_filename}: \033[1m\033[32m {len(checked_proxies)}\033[0m\n")
     print(output_str)
 
 def get_ip_ranges():
-    with open(checked_filename, 'r') as f:
-        data = f.read().splitlines()
+    data = proxies.read().splitlines()
     ip_ranges = set()
     ports = set()
     for line in data:
@@ -351,14 +342,14 @@ if __name__ == "__main__":
     # Create and start threads for each of the functions
     t1 = threading.Thread(target=run_thread, args=(get_proxies, 15))
     t2 = threading.Thread(target=check_proxies)
-    t3 = threading.Thread(target=run_thread, args=(track_proxies, 10))
-    t4 = threading.Thread(target=run_thread, args=(write_alive_proxies_to_file, 2))
-    t5 = threading.Thread(target=recheck_alive_proxies)
+    if not args.api:
+        t3 = threading.Thread(target=run_thread, args=(track_proxies, 10))
+    t4 = threading.Thread(target=recheck_alive_proxies)
     
     t1.start()
     t2.start()
-    t3.start()
+    if not args.api:
+        t3.start()
     t4.start()
-    t5.start()
 
-    t5.join()
+    t4.join()
