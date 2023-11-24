@@ -2,3 +2,6 @@ requests
 ipaddress
 socks
 PySocks
+fastapi
+sqlalchemy
+uvicorn
