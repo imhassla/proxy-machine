@@ -1,10 +1,12 @@
 # Proxy Machine
 
-- proxy.py - retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies.
+- proxy.py - retrieves and checks HTTP, SOCKS4, and SOCKS5 proxies.
 
 - scan.py - performs port scaning with socks4 socket using founded proxies.
 
 - checker.py - checks all types of proxies from scan_results or custom API '-url'
+
+- start.py - runs local hosted API service for HTTP, SOCKS4, and SOCKS5 proxies.
 
 
 The availability of all proxies is checked using a GET request to https://httpbin.org/ip. 
@@ -32,6 +34,19 @@ pip install -r requirements.txt
 
 
 ## Usage
+
+```bash
+python3 start.py
+```
+To start proxy checks of all types and run uvicorn server for local Proxy-Machine APi service.
+![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-start.png)
+
+Let's go with web-browser to http://ip:port, which is provided to us by uvicorn to see the APi doc:
+![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-doc.png)
+
+Curl usage:
+![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-demo.png)
+
 ```bash
 python3 proxy.py -type http
 ```
