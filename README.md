@@ -13,9 +13,7 @@ The availability of all proxies is checked using a GET request to https://httpbi
 
 Only those proxies that do not reveal the current external address of the system where the proxy checker is running are marked as available and alive.
 
-Every script can be run from the command line with several optional arguments to specify the requred ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, URL of the API to retrieve proxies from 
-- use '-h' or '-help' argumets to see all options of every script
-  
+Every script can be run from the command line with several optional arguments to specify the requred ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, URL of the API to retrieve proxies from   
 
 ## Install
 python3-full and python3-pip required:
