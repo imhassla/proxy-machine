@@ -2,6 +2,16 @@ import subprocess
 import time
 import signal
 import os
+import sqlite3
+
+choices=['http', 'https', 'socks4', 'socks5']
+for choice in choices:
+    conn = sqlite3.connect('data.db',timeout = 10)
+    c = conn.cursor()
+    c.execute(f'''CREATE TABLE IF NOT EXISTS {choice} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+    c.execute('BEGIN')
+    c.execute('COMMIT')
+    conn.close()
 
 commands = [
     "python3 proxy.py -type http -db -api -w 20",
