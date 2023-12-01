@@ -5,3 +5,5 @@ PySocks
 fastapi
 sqlalchemy
 uvicorn
+aiohttp
+asyncio
