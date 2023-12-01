@@ -40,7 +40,7 @@ python3 start.py
 To start proxy checks of all types and run uvicorn server for local Proxy-Machine APi service.
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-start.png)
 
-Let's go with web-browser to http://ip:port, which is provided to us by uvicorn to see the APi doc:
+Let's go with web-browser to http://127.0.0.1:8000, which is provided to us by uvicorn to see the APi doc:
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-doc.png)
 
 Curl usage of APi:
