@@ -7,7 +7,7 @@
 - checker.py - checks all types of proxies from scan_results or custom API '-url'
 
 - start.py - runs proxy delivery and checking, starts local hosted (http://127.0.0.1:8000) API service for HTTP, SOCKS4, and SOCKS5 proxies.
-- And runs local http proxy server (http://127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local APi
+  And runs local http proxy server (http://127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local APi
 
 
 The availability of all proxies is checked using a GET request to https://httpbin.org/ip. 
