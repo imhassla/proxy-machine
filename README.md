@@ -6,7 +6,7 @@
 
 - checker.py - checks all types of proxies from scan_results or custom API '-url'
 
-- start.py - runs local hosted API service for HTTP, SOCKS4, and SOCKS5 proxies. And runs local http proxy server that listens on a local port and redirects all incoming requests through HTTP proxies handled by local APi
+- start.py - runs local hosted API service for HTTP, SOCKS4, and SOCKS5 proxies. And runs local http proxy server (127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local APi
 
 
 The availability of all proxies is checked using a GET request to https://httpbin.org/ip. 
@@ -42,8 +42,11 @@ To start proxy checks of all types and run uvicorn server for local Proxy-Machin
 Let's go with web-browser to http://ip:port, which is provided to us by uvicorn to see the APi doc:
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-doc.png)
 
-Curl usage:
+Curl usage of APi:
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-demo.png)
+
+Curl usage of local proxy relay server:
+![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/http-proxy-relay.png)
 
 ```bash
 python3 proxy.py -type http
