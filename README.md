@@ -43,9 +43,15 @@ Let's go with web-browser to http://ip:port, which is provided to us by uvicorn 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-doc.png)
 
 Curl usage of APi:
+```bash
+curl 'http://127.0.0.1:8000/proxy/http?time=2&minutes=2&format=text'
+```
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-demo.png)
 
 Curl usage of local proxy relay server:
+```bash
+curl --proxy 127.0.0.1:3333 http://httpbin.org/ip
+```
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/http-proxy-relay.png)
 
 ```bash
