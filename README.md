@@ -32,7 +32,7 @@ pip install -r requirements.txt
 
 
 ## Usage
-
+#Start te Machine!
 ```bash
 python3 start.py
 ```
@@ -54,6 +54,7 @@ curl --proxy 127.0.0.1:3333 http://httpbin.org/ip
 ```
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/http-proxy-relay.png)
 
+proxy.py
 ```bash
 python3 proxy.py -type http
 ```
