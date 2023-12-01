@@ -19,7 +19,7 @@ Every script can be run from the command line with several optional arguments to
 ## Install
 python3-full and python3-pip required:
 ```bash
-sudo apt update && sudo apt install git screen python3-full python3-pip -y
+sudo apt update && sudo apt install git python3-full python3-pip -y
 ```
   
 Clone repo and install dependencies:
