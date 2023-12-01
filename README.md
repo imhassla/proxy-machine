@@ -32,7 +32,7 @@ pip install -r requirements.txt
 
 
 ## Usage
-#Start te Machine!
+Start the Machine!
 ```bash
 python3 start.py
 ```
@@ -54,22 +54,14 @@ curl --proxy 127.0.0.1:3333 http://httpbin.org/ip
 ```
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/http-proxy-relay.png)
 
-proxy.py
+## Other scripts and options
 ```bash
 python3 proxy.py -type http
 ```
 
 The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C). 
 
-While running, it will periodically retrieve, check, and track proxies, updating the `checked_proxies.txt` 
-
-main options:
-- `  -h, --help `           show help message                       
-- `  -t `                   timeout (s.) of checker  
-- `  -w `                   number of worker threads to use when checking proxies                  
-- `  -url 'URL' `           custom "URL" of the API to retrieve proxies from
-- ` -type {http,https,socks4,socks5}`
-type of proxies to retrieve and check (default=http)  
+While running, it will periodically retrieve, check, and track proxies, updating the data.db 
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_machine.png)
 
@@ -83,14 +75,14 @@ runs proxy.py in background to retrieve socks4 proxies and perform port scan owe
 ```bash
 python3 checker.py -list
 ```
-chech all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from open sources, print results and store in DB.
-
+chech all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from open sources, print results and store proxies in data.db.
 
 
 ```bash
 python3 checker.py -ping -url 'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=all&timeout=300'
 ```
 check API source list as all types of proxies, print results and store in DB.
+- `  -h, --help `           show help message and optional arguments of scripts
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_checker.png)
 
