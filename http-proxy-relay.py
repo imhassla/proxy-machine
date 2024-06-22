@@ -12,7 +12,7 @@ async def update_proxies():
     global last_update
     while True:
         if last_update is None or (time.time() - last_update) > 10:
-            proxy_api = "http://127.0.0.1:8000/proxy/http?time=2&minutes=2&format=text"
+            proxy_api = "http://127.0.0.1:8000/proxy/http?time=1&minutes=1&format=text"
             async with aiohttp.ClientSession() as session:
                 try:
                     resp = await session.get(proxy_api)
