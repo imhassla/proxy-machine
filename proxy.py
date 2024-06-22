@@ -5,6 +5,7 @@ import sqlite3
 import random
 import time
 import os
+import re
 import argparse
 import socks
 import socket
@@ -146,14 +147,19 @@ def get_proxies():
             f"https://github.com/ErcinDedeoglu/proxies/blob/main/proxies/{proxy_type}.txt",
             f"https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/{proxy_type}_proxies.txt",
         ]
+
+        # Регулярное выражение для проверки формата ip:port
+        ip_port_pattern = re.compile(r'^\d{1,3}(\.\d{1,3}){3}:\d+$')
+
         # Try to retrieve proxies from each additional source.
         for source in additional_sources:
             try:
                 response = requests.get(source)
-                new_proxies = set(response.text.splitlines())
+                new_proxies = set(line.strip() for line in response.text.splitlines() if ip_port_pattern.match(line.strip()))
                 proxies.update(new_proxies - proxies)
             except:
                 pass
+
         # If the args.db argument is specified, retrieve proxies from the database.
         if args.db:
             conn = sqlite3.connect('data.db', timeout=10)
