@@ -30,7 +30,6 @@ args = parser.parse_args()
 os.system('cls' if os.name == 'nt' else 'clear')
 os.system('ulimit -n 50000')
 
-
 # Initialize a set to store the proxies and other variables for tracking proxy statistics and availability
 proxy_type = args.type
 proxies = set()
@@ -77,16 +76,15 @@ def check_proxy(proxy, proxy_type):
         # Split the proxy into host and port
         proxy_host, proxy_port = proxy.split(':')
         # Set up the proxies dictionary and url based on the proxy type
+        url = 'http://httpbin.org/ip'
         if proxy_type == 'http':
             proxies = {
                 'http': f'http://{proxy_host}:{proxy_port}'
             }
-            url = 'http://httpbin.org/ip'
         elif proxy_type == 'https':
             proxies = {
                 'https': f'https://{proxy_host}:{proxy_port}'
             }
-            url = 'https://httpbin.org/ip'
         # Set up the default proxy for socks4 or socks5 using the socks module
         elif proxy_type == 'socks4':
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -144,6 +142,9 @@ def get_proxies():
         # Define additional sources for retrieving proxies.
         additional_sources = [
             f"https://www.proxy-list.download/api/v1/get?type={proxy_type}",
+            f"https://github.com/mmpx12/proxy-list/blob/master/{proxy_type}.txt",
+            f"https://github.com/ErcinDedeoglu/proxies/blob/main/proxies/{proxy_type}.txt",
+            f"https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/{proxy_type}_proxies.txt",
         ]
         # Try to retrieve proxies from each additional source.
         for source in additional_sources:
@@ -225,7 +226,6 @@ def recheck_alive_proxies():
         except:
             pass
 
-    
 def track_proxies():
     checked_proxies = alive_proxies_set.copy()
     # For each checked proxy, increment its count in the proxy_stats dictionary. If it is not already present in the dictionary, add it with an initial count of 1.
@@ -263,9 +263,12 @@ def track_proxies():
 
     print(f"proxies in memory:\033[1m\033[31m {len(proxies)}\033[0m")
     print(output_str)
+    with open('last_checked.txt', 'w') as f:
+        for proxy in absent_proxies:
+            f.write(proxy + '\n')
 
 def get_ip_ranges():
-    data = proxies.read().splitlines()
+    data = list(alive_proxies_set)
     ip_ranges = set()
     ports = set()
     for line in data:
@@ -282,6 +285,7 @@ def run_scan(ip_range, ports):
         # Convert the list of ports to a list of strings
         ports_str = [str(port) for port in ports]
         # Start the scan.py script as a subprocess
+
         process = subprocess.Popen(
             ['python3', 'scan.py', '-ping', '-machine', '-range', ip_range, '-port', *ports_str],
             stdout=subprocess.DEVNULL,
@@ -314,7 +318,7 @@ def scan_ip_ranges():
         while not ip_ranges or not ports:
             # Retry getting the list of IP ranges and ports
             ip_ranges, ports = get_ip_ranges()
-            time.sleep(5)
+            time.sleep(3)
         with ThreadPoolExecutor() as executor:
             while ip_ranges:
                 # Submit a task to the executor for each IP range
@@ -324,10 +328,6 @@ def scan_ip_ranges():
                         scanned_ip_ranges.add(ip_range)
                 # Get the updated list of IP ranges
                 ip_ranges, ports = get_ip_ranges()
-
-if args.scan:
-        scan_thread = threading.Thread(target=scan_ip_ranges)
-        scan_thread.start()
 
 def run_thread(func, interval):
     # Run the given function at the specified interval
@@ -339,6 +339,10 @@ def run_thread(func, interval):
             pass
 
 if __name__ == "__main__":
+    if args.scan:
+        scan_thread = threading.Thread(target=scan_ip_ranges)
+        scan_thread.start()
+        
     # Create and start threads for each of the functions
     t1 = threading.Thread(target=run_thread, args=(get_proxies, 15))
     t2 = threading.Thread(target=check_proxies)
@@ -351,5 +355,5 @@ if __name__ == "__main__":
     if not args.api:
         t3.start()
     t4.start()
-
+    
     t4.join()

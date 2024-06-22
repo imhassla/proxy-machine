@@ -13,6 +13,7 @@ engine = create_engine(
 
 metadata = MetaData()
 http_table = Table('http', metadata, autoload_with=engine)
+https_table = Table('https', metadata, autoload_with=engine)
 socks4_table = Table('socks4', metadata, autoload_with=engine)
 socks5_table = Table('socks5', metadata, autoload_with=engine)
 
@@ -55,11 +56,13 @@ async def get_documentation():
 
 @app.get("/proxy/{proxy_type}")
 async def get_proxy(proxy_type: str, time: Optional[float] = None, minutes: int = 30, format: str = 'json'):
-    if proxy_type not in ["http", "socks4","socks5"]:
+    if proxy_type not in ["http","https", "socks4","socks5"]:
         return JSONResponse(status_code=400, content={"message": "Invalid proxy type"})
 
     if proxy_type == "http":
         table = http_table
+    if proxy_type == "https":
+        table = https_table
     elif proxy_type == "socks4":
         table = socks4_table
     else:

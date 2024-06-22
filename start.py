@@ -4,7 +4,7 @@ import signal
 import os
 import sqlite3
 
-choices=['http', 'https', 'socks4', 'socks5']
+choices=['http','https', 'socks4', 'socks5']
 for choice in choices:
     conn = sqlite3.connect('data.db',timeout = 10)
     c = conn.cursor()
@@ -14,9 +14,10 @@ for choice in choices:
     conn.close()
 
 commands = [
-    "python3 proxy.py -type http -db -api -w 20",
-    "python3 proxy.py -type socks4 -db -api -w 20",
-    "python3 proxy.py -type socks5 -db -api -w 20",
+    "python3 proxy.py -type http -db -api -w 20 -t 5",
+    "python3 proxy.py -type https -db -api -w 20 -t 5",
+    "python3 proxy.py -type socks4 -db -api -w 20 -t 8",
+    "python3 proxy.py -type socks5 -db -api -w 20 -t 8",
     "python3 http-proxy-relay.py",
     "uvicorn api:app --host 127.0.0.1 --port 8000 --reload"
 ]
