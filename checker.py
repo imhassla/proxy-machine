@@ -1,8 +1,8 @@
 import os
+import re
 import time
 import socks
 import socket
-import re
 import sqlite3
 import requests
 import argparse
@@ -22,7 +22,8 @@ parser.add_argument('-clean', action='store_true', help='clean old unavailible p
 parser.add_argument('-scan', action='store_true', help='check scan results and clear "scan_results" table in db')
 parser.add_argument('-type', type=str, default= None, choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-mass', type=str, help='Absolute path to the masscan XML file')
-parser.add_argument('-list', action='store_true', help='check all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from open sources')
+parser.add_argument('-list', action='store_true', help='check proxy from open sources')
+parser.add_argument('-targets', action='store_true', help='check proxy from targets.txt')
 parser.add_argument('-s', nargs='+', help='check multiple server:port')
 parser.add_argument('-w', type=int, default=50, help='number of worker threads to use when checking proxies')
 parser.add_argument('-t', type=int, default=3, help='timeout (s.) of checker')
@@ -148,6 +149,7 @@ def get_db_connection():
 
 if __name__ == '__main__':
     data_written = False
+    
     if args.type:
         with closing(get_db_connection()) as conn:
             c = conn.cursor()
@@ -179,7 +181,6 @@ if __name__ == '__main__':
             ip_port = f"{address}:{port}"
             ip_ports.add(ip_port)
     if args.list:
-
         urls = [
             "https://github.com/TheSpeedX/PROXY-List/blob/master/socks5.txt",
             "https://github.com/TheSpeedX/PROXY-List/blob/master/socks4.txt",
@@ -241,6 +242,7 @@ if __name__ == '__main__':
         with open('targets.txt', 'w+') as file:
             for line in unique_lines:
                 file.write(line)
+    if args.list or args.targets:
         with open('targets.txt', 'r') as f:
             for line in f:
                 address, port = line.strip().split(':')
@@ -306,3 +308,4 @@ for proxy_type, checked_proxies in all_checked_proxies.items():
             conn.commit()                         
 if not data_written:
     print('No proxy found')
+
