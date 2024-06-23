@@ -23,6 +23,8 @@ parser.add_argument('-scan', action='store_true', help='check scan results and c
 parser.add_argument('-type', type=str, default= None, choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-mass', type=str, help='Absolute path to the masscan XML file')
 parser.add_argument('-list', action='store_true', help='check all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from open sources')
+parser.add_argument('-targets', action='store_true', help='check all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from target list')
+
 parser.add_argument('-s', nargs='+', help='check multiple server:port')
 parser.add_argument('-w', type=int, default=50, help='number of worker threads to use when checking proxies')
 parser.add_argument('-t', type=int, default=3, help='timeout (s.) of checker')
@@ -74,7 +76,7 @@ if args.ping:
 # Get the user's IP address 
 while True:
     try:
-        url = 'https://httpbin.org/ip'
+        url = 'http://httpbin.org/ip'
         response = requests.get(url)
         data = response.json()
         sip = data.get('origin')
@@ -148,6 +150,8 @@ def get_db_connection():
 
 if __name__ == '__main__':
     data_written = False
+    proxies = set()
+    pattern = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b")
     if args.type:
         with closing(get_db_connection()) as conn:
             c = conn.cursor()
@@ -222,25 +226,12 @@ if __name__ == '__main__':
             "https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/socks5_proxies.txt",
         ]
 
-        proxies = set()
-        pattern = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b")
         print('Getting targets list...')
         for url in urls:
             response = requests.get(url)
             if response.status_code == 200:
                 proxies.update(response.text.splitlines())
-
-        with open("targets.txt", "w") as f:
-            for proxy in proxies:
-                for match in pattern.findall(proxy):
-                    f.write(match + "\n")
-        with open('targets.txt', 'r') as file:
-            lines = file.readlines()
-            unique_lines = list(set(lines))
-            unique_lines.sort(key=lines.index)
-        with open('targets.txt', 'w+') as file:
-            for line in unique_lines:
-                file.write(line)
+    if args.targets:
         with open('targets.txt', 'r') as f:
             for line in f:
                 address, port = line.strip().split(':')

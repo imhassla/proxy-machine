@@ -16,9 +16,9 @@ from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
-parser.add_argument('-p', type=int, default=4000, help='ping (ms.) of the proxy server. (for default providers only)')
+parser.add_argument('-p', type=int, default=5000, help='ping (ms.) of the proxy server. (for default providers only)')
 parser.add_argument('-t', type=int, default=5, help='timeout (s.) of checker')
-parser.add_argument('-w', type=int, default=100, help='number of worker threads to use when checking proxies')
+parser.add_argument('-w', type=int, default=200, help='number of worker threads to use when checking proxies')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-api', action='store_true', help='If specified, dont track proxies ')
 parser.add_argument('-scan', action='store_true', help='If specified, perform scan.py for checked proxies ip ranges.')
@@ -61,8 +61,8 @@ for i in txt:
 # Get the user's IP address 
 while True:
     try:
-        url = 'https://httpbin.org/ip'
-        response = requests.get(url)
+        ip_url = 'http://httpbin.org/ip'
+        response = requests.get(ip_url)
         data = response.json()
         sip = data.get('origin')
         break
@@ -148,7 +148,6 @@ def get_proxies():
             f"https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/{proxy_type}_proxies.txt",
         ]
 
-        # Регулярное выражение для проверки формата ip:port
         ip_port_pattern = re.compile(r'^\d{1,3}(\.\d{1,3}){3}:\d+$')
 
         # Try to retrieve proxies from each additional source.
