@@ -5,13 +5,17 @@ import socks
 import socket
 import sqlite3
 import requests
+import urllib3
 import argparse
+import json
 import threading
 import subprocess
 import concurrent.futures
 from datetime import datetime
 from contextlib import closing
 import xml.etree.ElementTree as ET
+from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script checks uniq ip:port combinations from scan_results/ directory as http, https, socks4, socks5 proxies. ')
@@ -85,63 +89,63 @@ while True:
         time.sleep(5)
 
 def check_proxy(proxy, proxy_type):
-    # Get the current time
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     try:
-        # Split the proxy into host and port
         proxy_host, proxy_port = proxy.split(':')
-        # Set up the proxies dictionary and url based on the proxy type
-        url = 'http://httpbin.org/ip'
-        if proxy_type == 'http':
-            proxies = {
-                'http': f'http://{proxy_host}:{proxy_port}'
-            }
-        elif proxy_type == 'https':
-            proxies = {
-                'https': f'https://{proxy_host}:{proxy_port}'
-            }
-        # Set up the default proxy for socks4 or socks5 using the socks module
-        elif proxy_type == 'socks4':
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                socks.set_default_proxy(socks.SOCKS4, proxy_host, int(proxy_port))
-                socket.socket = socks.socksocket
-        elif proxy_type == 'socks5':
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                socks.set_default_proxy(socks.SOCKS5, proxy_host, int(proxy_port))
-                socket.socket = socks.socksocket
-        # If the proxy type is http or https, use the requests module to send a request to the url using the proxies dictionary
-        if proxy_type == 'http' or proxy_type == 'https':
+        url = 'https://httpbin.org/ip'  
+        if proxy_type in ['http', 'https']:
+            http = urllib3.ProxyManager(
+                f"{proxy_type}://{proxy_host}:{proxy_port}",
+                timeout=urllib3.Timeout(connect=args.t, read=args.t),
+                retries=False,
+                cert_reqs='CERT_NONE',  
+                assert_hostname=False  
+            )
             start_time = time.time()
-            response = requests.get(url, proxies=proxies, timeout=args.t)
+            response = http.request('GET', url, preload_content=False)
             end_time = time.time()
             response_time = end_time - start_time
-            rounded_resp_time = round(response_time,2)
-            data = response.json()
-            # If the origin IP address in the response matches the user's IP address, return None
+            rounded_resp_time = round(response_time, 2)
+            data = json.loads(response.data.decode('utf-8'))
             if any(origin == sip for origin in data.get('origin').split(', ')):
                 return None
-            # Otherwise, return the proxy, response time and current time
             else:
-                return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time)               
-        # If the proxy type is socks4 or socks5, use the requests module to send a request to the url
-        if proxy_type == 'socks4' or proxy_type == 'socks5':
-            url = 'https://httpbin.org/ip'
-            r = requests.get(url, timeout=args.t)
-            # If the request was successful and the returned IP address is different from the user's IP address, return the proxy and response time
+                return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time) 
+        elif proxy_type in ['socks4', 'socks5']:
+            if proxy_type == 'socks4':
+                socks.set_default_proxy(socks.SOCKS4, proxy_host, int(proxy_port))
+                socket.socket = socks.socksocket
+            elif proxy_type == 'socks5':
+                socks.set_default_proxy(socks.SOCKS5, proxy_host, int(proxy_port))
+                socket.socket = socks.socksocket
+            r = requests.get(url, timeout=args.t, verify=False)
             if r.status_code == 200:
                 response_time = r.elapsed.total_seconds()
-                rounded_resp_time = round(response_time,2)
+                rounded_resp_time = round(response_time, 2)
                 data = r.json()
                 if any(origin == sip for origin in data.get('origin').split(', ')):
                     return None
                 else:
                     return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time) 
-    except:
-        # Reset the default proxy settings in case of an exception
+    except SSLError as e:
+        #print(f"SSL Error for proxy {proxy}: {e}")
+        return None
+    except ProxyError as e:
+        #print(f"Proxy Error for proxy {proxy}: {e}")
+        return None
+    except ConnectTimeoutError as e:
+        #print(f"Connection Timeout Error for proxy {proxy}: {e}")
+        return None
+    except ReadTimeoutError as e:
+        #print(f"Read Timeout Error for proxy {proxy}: {e}")
+        return None
+    except Exception as e:
+        #print(f"General Error for proxy {proxy}: {e}")
+        return None
+    finally:
         socks.set_default_proxy()
-        pass
-    # Return None if an exception occurred or if the request was not successful
-    return None 
+        socket.socket = socket.socket
+    return None
 
 def get_db_connection():
     conn = sqlite3.connect('data.db', timeout=10)
@@ -227,9 +231,12 @@ if __name__ == '__main__':
         pattern = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b")
         print('Getting targets list...')
         for url in urls:
-            response = requests.get(url)
-            if response.status_code == 200:
-                proxies.update(response.text.splitlines())
+            try:
+                response = requests.get(url)
+                if response.status_code == 200:
+                    proxies.update(response.text.splitlines())
+            except:
+                pass
 
         with open("targets.txt", "w") as f:
             for proxy in proxies:
