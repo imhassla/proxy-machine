@@ -31,7 +31,6 @@ parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies
 args = parser.parse_args()
 
 # Clear the screen
-os.system('cls' if os.name == 'nt' else 'clear')
 os.system('ulimit -n 50000')
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -55,12 +54,6 @@ if args.url:
     api_url = args.url
 else:
     api_url = f"https://api.proxyscrape.com/v2/?request=displayproxies&protocol={proxy_type}&timeout={args.p}&country=all&ssl=all&anonymity=all"
-
-# Print a message indicating that data is being retrieved from sources and primary proxy checks are being performed
-txt = '\033[1;36mGetting data from sources and primary proxy checks. \nStatistics will be displayed soon...\033[0m'
-for i in txt:  
-    time.sleep(0.01)
-    print(i, end='', flush=True)
 
 # Get the user's IP address 
 while True:
@@ -155,7 +148,6 @@ def check_proxy(proxy, proxy_type):
     # Return None if no valid response was obtained
     return None
 
-
 def get_proxies():
     try:
         # Reset the default proxy settings.
@@ -172,6 +164,7 @@ def get_proxies():
             f"https://www.proxy-list.download/api/v1/get?type={proxy_type}",
             f"https://github.com/mmpx12/proxy-list/blob/master/{proxy_type}.txt",
             f"https://github.com/ErcinDedeoglu/proxies/blob/main/proxies/{proxy_type}.txt",
+            f"http://pubproxy.com/api/proxy?limit=5&format=txt?type={proxy_type}",
             f"https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/{proxy_type}_proxies.txt",
         ]
 
@@ -297,9 +290,6 @@ def track_proxies():
 
     print(f"proxies in memory:\033[1m\033[31m {len(proxies)}\033[0m")
     print(output_str)
-    with open('last_checked.txt', 'w') as f:
-        for proxy in absent_proxies:
-            f.write(proxy + '\n')
 
 def get_ip_ranges():
     data = list(alive_proxies_set)

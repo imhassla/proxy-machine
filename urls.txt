@@ -37,4 +37,5 @@ https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/http_pro
 https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/https_proxies.txt
 https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/socks4_proxies.txt
 https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/socks5_proxies.txt
-
+https://github.com/clarketm/proxy-list/blob/master/proxy-list-raw.txt
+http://pubproxy.com/api/proxy?limit=5&format=txt

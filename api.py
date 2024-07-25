@@ -1,22 +1,26 @@
 from fastapi import FastAPI
-from sqlalchemy import create_engine, Table, MetaData, select, and_
+from sqlalchemy import create_engine, Table, MetaData, select
 from starlette.responses import JSONResponse, Response, HTMLResponse
 from datetime import datetime, timedelta
 from typing import Optional
 
 app = FastAPI()
 
+# Create a connection to the SQLite database
 engine = create_engine(
     "sqlite:///data.db",
-    connect_args={'timeout': 10} 
+    connect_args={'timeout': 30}  # Set a timeout for the database connection
 )
 
 metadata = MetaData()
+
+# Define tables in the database
 http_table = Table('http', metadata, autoload_with=engine)
 https_table = Table('https', metadata, autoload_with=engine)
 socks4_table = Table('socks4', metadata, autoload_with=engine)
 socks5_table = Table('socks5', metadata, autoload_with=engine)
 
+# Route to display API documentation
 @app.get("/", response_class=HTMLResponse)
 async def get_documentation():
     return """
@@ -54,11 +58,14 @@ async def get_documentation():
     </html>
     """
 
+# Route to get proxies based on their type and filters
 @app.get("/proxy/{proxy_type}")
 async def get_proxy(proxy_type: str, time: Optional[float] = None, minutes: int = 30, format: str = 'json'):
-    if proxy_type not in ["http", "https", "socks4","socks5"]:
+    # Check if the provided proxy type is valid
+    if proxy_type not in ["http", "https", "socks4", "socks5"]:
         return JSONResponse(status_code=400, content={"message": "Invalid proxy type"})
 
+    # Select the appropriate table based on the proxy type
     if proxy_type == "http":
         table = http_table
     elif proxy_type == "https":
@@ -68,8 +75,10 @@ async def get_proxy(proxy_type: str, time: Optional[float] = None, minutes: int 
     else:
         table = socks5_table
 
+    # Calculate the time threshold for filtering proxies
     time_threshold = datetime.now() - timedelta(minutes=minutes)
 
+    # Create a query to fetch proxies based on response time
     if time is not None:
         query = select(table.c.proxy, table.c.response_time, table.c.last_checked).where(
             table.c.response_time <= time
@@ -77,15 +86,18 @@ async def get_proxy(proxy_type: str, time: Optional[float] = None, minutes: int 
     else:
         query = select(table.c.proxy, table.c.response_time, table.c.last_checked).order_by(table.c.response_time)
 
+    # Execute the query and fetch results
     with engine.connect() as connection:
         result = connection.execute(query).fetchall()
 
+    # Filter proxies based on the last checked time
     proxies = [
         {column.name: value for column, value in zip(table.columns, row)}
         for row in result
         if datetime.strptime(row[2], '%Y-%m-%d %H:%M:%S') >= time_threshold
     ]
 
+    # Return the proxies in the requested format
     if format == 'text':
         return Response("\n".join([proxy['proxy'] for proxy in proxies]), media_type='text/plain')
     else:

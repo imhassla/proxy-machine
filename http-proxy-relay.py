@@ -14,7 +14,7 @@ async def update_proxies():
     while True:
         # Check if it's time to update the proxies
         if last_update is None or (time.time() - last_update) > 10:
-            proxy_api = "http://127.0.0.1:8000/proxy/http?time=5&minutes=10&format=text"
+            proxy_api = "http://127.0.0.1:8000/proxy/http?time=4&minutes=4&format=text"
             async with aiohttp.ClientSession() as session:
                 try:
                     # Fetch the list of proxies from the API
@@ -24,7 +24,7 @@ async def update_proxies():
                 except Exception as e:
                     print(f"Error getting proxies: {e}")
                     await asyncio.sleep(5)
-        await asyncio.sleep(1)
+        await asyncio.sleep(5)
 
 # Function to fetch a URL using a given proxy
 async def fetch(session, url, proxy=None):
