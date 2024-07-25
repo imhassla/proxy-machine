@@ -1,22 +1,26 @@
-# Используем официальный Python образ
+# Use the official Python image
 FROM python:3.9-slim
 
-# Устанавливаем необходимые зависимости
+# Install required dependencies
 RUN apt-get update && apt-get install -y \
     iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
-# Создаем рабочую директорию
+# Create a working directory
 WORKDIR /app
 
-# Копируем содержимое текущей директории в контейнер
+# Copy the contents of the current directory into the container
 COPY . /app
 
-# Устанавливаем зависимости Python из requirements.txt
+# Install Python dependencies from requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Указываем команду для запуска скрипта по умолчанию
+# Specify the ports that the application will use
+EXPOSE 8000
+EXPOSE 3333
+
+# Specify the command to run the script by default
 ENTRYPOINT ["python"]
 
-# Указываем скрипт по умолчанию
+# Specify the default script
 CMD ["start.py"]
