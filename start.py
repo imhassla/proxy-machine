@@ -6,7 +6,7 @@ import sqlite3
 
 choices=['http','https', 'socks4', 'socks5']
 for choice in choices:
-    conn = sqlite3.connect('data.db',timeout = 10)
+    conn = sqlite3.connect('data.db',timeout = 30)
     c = conn.cursor()
     c.execute(f'''CREATE TABLE IF NOT EXISTS {choice} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
     c.execute('BEGIN')
@@ -18,6 +18,7 @@ commands = [
     "python3 proxy.py -type https -db -api -w 25 -t 5",
     "python3 proxy.py -type socks4 -db -api -w 25 -t 8",
     "python3 proxy.py -type socks5 -db -api -w 25 -t 8",
+    "python3 checker.py -list",
     "python3 http-proxy-relay.py",
     "uvicorn api:app --host 0.0.0.0 --port 8000 --reload"
 ]

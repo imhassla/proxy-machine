@@ -219,11 +219,12 @@ def check_proxies():
                     # If the result is not None, the proxy is alive
                     if result is not None:
                         proxy, rounded_resp_time, current_time = result
+                        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         rounded_resp_time = round(rounded_resp_time, 2)
                         alive_proxies_set.add(proxy)
                         # If the database option is enabled, store the proxy information in the database
                         if args.db:
-                            conn = sqlite3.connect('data.db',timeout = 10)
+                            conn = sqlite3.connect('data.db',timeout = 30)
                             c = conn.cursor()
                             c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
                             c.execute('BEGIN')
