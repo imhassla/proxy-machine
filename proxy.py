@@ -75,63 +75,86 @@ while True:
         time.sleep(5)
 
 def check_proxy(proxy, proxy_type):
+    # Record the current time in the format YYYY-MM-DD HH:MM:SS
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
     try:
+        # Split the proxy string into host and port
         proxy_host, proxy_port = proxy.split(':')
-        url = 'https://httpbin.org/ip'  
+        # Define the URL for checking the proxy
+        url = 'https://httpbin.org/ip'
+        
+        # Check if the proxy type is 'http' or 'https'
         if proxy_type in ['http', 'https']:
+            # Create a ProxyManager instance for the given proxy
             http = urllib3.ProxyManager(
                 f"{proxy_type}://{proxy_host}:{proxy_port}",
-                timeout=urllib3.Timeout(connect=args.t, read=args.t),
-                retries=False,
-                cert_reqs='CERT_NONE',  
-                assert_hostname=False  
+                timeout=urllib3.Timeout(connect=args.t, read=args.t),  # Set connection and read timeouts
+                retries=False,  # Disable retries in urllib3
+                cert_reqs='CERT_NONE',  # Do not verify SSL certificates
+                assert_hostname=False  # Do not verify hostname in SSL certificate
             )
+            
+            # Record the start time for measuring response time
             start_time = time.time()
+            # Make a GET request through the proxy
             response = http.request('GET', url, preload_content=False)
+            # Record the end time for measuring response time
             end_time = time.time()
+            # Calculate the response time
             response_time = end_time - start_time
-            rounded_resp_time = round(response_time, 2)
+            # Decode the response data from bytes to string and parse it as JSON
             data = json.loads(response.data.decode('utf-8'))
+            
+            # Check if the IP address returned by the proxy matches the user's IP address
             if any(origin == sip for origin in data.get('origin').split(', ')):
-                return None
+                return None  # If the IP matches, the proxy is valid but no need to return any data
             else:
-                return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time) 
+                # If the IP does not match, return a tuple with the proxy details and response time
+                return (f'{proxy_host}:{proxy_port}', response_time, current_time)
+        
+        # Check if the proxy type is 'socks4' or 'socks5'
         elif proxy_type in ['socks4', 'socks5']:
+            # Configure the SOCKS proxy based on the type
             if proxy_type == 'socks4':
                 socks.set_default_proxy(socks.SOCKS4, proxy_host, int(proxy_port))
                 socket.socket = socks.socksocket
             elif proxy_type == 'socks5':
                 socks.set_default_proxy(socks.SOCKS5, proxy_host, int(proxy_port))
                 socket.socket = socks.socksocket
+            
+            # Make a GET request through the SOCKS proxy
             r = requests.get(url, timeout=args.t, verify=False)
+            
+            # Check if the response status code is 200 (OK)
             if r.status_code == 200:
+                # Calculate the response time
                 response_time = r.elapsed.total_seconds()
-                rounded_resp_time = round(response_time, 2)
+                # Parse the response as JSON
                 data = r.json()
+                
+                # Check if the IP address returned by the proxy matches the user's IP address
                 if any(origin == sip for origin in data.get('origin').split(', ')):
-                    return None
+                    return None  # If the IP matches, the proxy is valid but no need to return any data
                 else:
-                    return (f'{proxy_host}:{proxy_port}', rounded_resp_time, current_time) 
-    except SSLError as e:
-        #print(f"SSL Error for proxy {proxy}: {e}")
-        return None
-    except ProxyError as e:
-        #print(f"Proxy Error for proxy {proxy}: {e}")
-        return None
-    except ConnectTimeoutError as e:
-        #print(f"Connection Timeout Error for proxy {proxy}: {e}")
-        return None
-    except ReadTimeoutError as e:
-        #print(f"Read Timeout Error for proxy {proxy}: {e}")
-        return None
-    except Exception as e:
-        #print(f"General Error for proxy {proxy}: {e}")
-        return None
+                    # If the IP does not match, return a tuple with the proxy details and response time
+                    return (f'{proxy_host}:{proxy_port}', response_time, current_time)
+    
+    except (Exception, SSLError, ProxyError, ConnectTimeoutError, ReadTimeoutError) as e:
+        # Handle exceptions related to the proxy check
+        # Uncomment the line below to print the error message for debugging
+        # print(f"General Error for proxy {proxy}: {e}")
+        return None  # Return None if any exception occurs
+    
     finally:
+        # Reset the SOCKS proxy to the default state
         socks.set_default_proxy()
+        # Reset the socket to the default socket
         socket.socket = socket.socket
+    
+    # Return None if no valid response was obtained
     return None
+
 
 def get_proxies():
     try:
@@ -196,6 +219,7 @@ def check_proxies():
                     # If the result is not None, the proxy is alive
                     if result is not None:
                         proxy, rounded_resp_time, current_time = result
+                        rounded_resp_time = round(rounded_resp_time, 2)
                         alive_proxies_set.add(proxy)
                         # If the database option is enabled, store the proxy information in the database
                         if args.db:

@@ -55,4 +55,4 @@ async def on_startup(app):
 
 app.on_startup.append(on_startup)
 
-web.run_app(app, host='127.0.0.1', port=3333)
+web.run_app(app, host='0.0.0.0', port=3333)
