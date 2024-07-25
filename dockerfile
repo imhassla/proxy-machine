@@ -3,7 +3,7 @@ FROM python:3.9-slim
 
 # Install required dependencies
 RUN apt-get update && apt-get install -y \
-    iputils-ping \
+    iputils-ping procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a working directory
