@@ -71,7 +71,7 @@ try:
     while True:
         for i, process in enumerate(processes):
             if process.poll() is not None:  # Process has terminated
-                logging.warning(f"Process {process.args} terminated unexpectedly. Restarting...")
+                logging.warning(f"Process {process.args} terminated. Restarting...")
                 processes[i] = start_process(commands[i])
         time.sleep(5)
 

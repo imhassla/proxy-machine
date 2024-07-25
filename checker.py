@@ -10,12 +10,17 @@ import argparse
 import json
 import threading
 import subprocess
+import configparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import concurrent.futures
 from datetime import datetime
 from contextlib import closing
 import xml.etree.ElementTree as ET
 from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError
+
+# Load configuration
+config = configparser.ConfigParser()
+config.read('config.ini')
 
 parser = argparse.ArgumentParser(description='The script checks uniq ip:port combinations from scan_results/ directory as http, https, socks4, socks5 proxies. ')
 parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies from. Only ip:port format supported')
@@ -221,8 +226,8 @@ def check_proxy(proxy, proxy_type):
     return None
 
 def get_db_connection():
-    # Establish a connection to the SQLite database 'data.db' with a timeout of 30 seconds
-    conn = sqlite3.connect('data.db', timeout=30)
+    # Establish a connection to the SQLite database with a timeout of 30 seconds
+    conn = sqlite3.connect(config['database']['path'], timeout=30)
     return conn
 
 def load_urls_from_file(file_path):

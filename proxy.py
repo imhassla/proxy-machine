@@ -11,11 +11,16 @@ import argparse
 import json
 import socks
 import socket
+import configparser
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError
+
+# Load configuration
+config = configparser.ConfigParser()
+config.read('config.ini')
 
 # Set up command line argument parsing
 parser = argparse.ArgumentParser(description='The script retrieves and checks http, https, socks4 and socks5 proxies')
@@ -181,7 +186,7 @@ def get_proxies():
 
         # If the args.db argument is specified, retrieve proxies from the database.
         if args.db:
-            conn = sqlite3.connect('data.db', timeout=10)
+            conn = sqlite3.connect(config['database']['path'], timeout=10)
             c = conn.cursor()
             c.execute(f"SELECT proxy FROM {proxy_type} WHERE response_time <= {t}")
             new_proxies = set([row[0] for row in c.fetchall()])
@@ -217,7 +222,7 @@ def check_proxies():
                         alive_proxies_set.add(proxy)
                         # If the database option is enabled, store the proxy information in the database
                         if args.db:
-                            conn = sqlite3.connect('data.db',timeout = 30)
+                            conn = sqlite3.connect(config['database']['path'],timeout = 30)
                             c = conn.cursor()
                             c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
                             c.execute('BEGIN')

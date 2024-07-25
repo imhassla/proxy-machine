@@ -3,12 +3,17 @@ from sqlalchemy import create_engine, Table, MetaData, select
 from starlette.responses import JSONResponse, Response, HTMLResponse
 from datetime import datetime, timedelta
 from typing import Optional
+import configparser
+
+# Load configuration
+config = configparser.ConfigParser()
+config.read('config.ini')
 
 app = FastAPI()
 
 # Create a connection to the SQLite database
 engine = create_engine(
-    "sqlite:///data.db",
+    f"sqlite:///{config['database']['path']}",
     connect_args={'timeout': 30}  # Set a timeout for the database connection
 )
 
