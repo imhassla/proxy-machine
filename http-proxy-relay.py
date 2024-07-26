@@ -14,7 +14,7 @@ async def update_proxies():
     while True:
         # Check if it's time to update the proxies
         if last_update is None or (time.time() - last_update) > 10:
-            proxy_api = "http://127.0.0.1:8000/proxy/http?time=4&minutes=4&format=text"
+            proxy_api = "http://127.0.0.1:8000/proxy/http?time=3&minutes=5&format=text"
             async with aiohttp.ClientSession() as session:
                 try:
                     # Fetch the list of proxies from the API
