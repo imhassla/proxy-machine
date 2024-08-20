@@ -27,6 +27,7 @@ parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies
 parser.add_argument('-ping', action='store_true', help='ping "1.1.1.1" before check to enshure that network connection is availble )')
 parser.add_argument('-db', action='store_true', help='recheck all proxies in db')
 parser.add_argument('-clean', action='store_true', help='clean old unavailible proxies in db')
+parser.add_argument('-txt', action='store_true', help='save results in txt/proxy_type.txt')
 parser.add_argument('-scan', action='store_true', help='check scan results and clear "scan_results" table in db')
 parser.add_argument('-type', nargs='+', type=str, default= None, choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
 parser.add_argument('-mass', type=str, help='Absolute path to the masscan XML file')
@@ -372,7 +373,13 @@ if __name__ == '__main__':
         all_checked_proxies[proxy_type] = sorted(checked_proxies, key=lambda x: x[1])
  
     # For each proxy type, insert or replace the checked proxies into the database
+    if args.txt:
+        if not os.path.exists('txt'):
+            os.makedirs('txt')
+
     for proxy_type, checked_proxies in all_checked_proxies.items():
+        proxy_list = []  
+
         for checked_proxy in checked_proxies:
             rounded_resp_time = round(checked_proxy[1], 2)
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -382,7 +389,14 @@ if __name__ == '__main__':
                 # Print the proxy details and response time
                 print(f"{proxy_type} {checked_proxy[0]} {rounded_resp_time} s.")
                 data_written = True
-                conn.commit()                         
+                conn.commit()
+
+            proxy_list.append(checked_proxy[0])
+
+        if args.txt:
+            with open(f'txt/{proxy_type}.txt', 'w') as file:
+                file.write('\n'.join(proxy_list))
+                
     # Print a message if no proxies were found
     if not data_written:
         print('No proxy found')
