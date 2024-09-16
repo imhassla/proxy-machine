@@ -195,7 +195,12 @@ def check_proxy(proxy, proxy_type):
                 socket.socket = socks.socksocket
             
             # Make a GET request through the SOCKS proxy
-            r = requests.get(url, timeout=args.t, verify=False)
+            # Headers including 'X-Forwarded-For'
+            headers = {
+                'X-Forwarded-For': proxy_host  # This will explicitly set the proxy forwarding IP
+            }
+
+            r = requests.get(url, timeout=args.t, verify=False, headers=headers)
             
             # Check if the response status code is 200 (OK)
             if r.status_code == 200:
