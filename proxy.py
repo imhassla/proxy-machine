@@ -1,6 +1,7 @@
 import subprocess
 import threading
 import requests
+import queue
 import sqlite3
 import random
 import urllib3
@@ -187,26 +188,50 @@ def get_proxies():
                 new_proxies = set(line.strip() for line in response.text.splitlines() if ip_port_pattern.match(line.strip()))
                 proxies.update(new_proxies - proxies)
             except:
-                pass
-
-        # If the args.db argument is specified, retrieve proxies from the database.
-        if args.db:
-            conn = sqlite3.connect(config['database']['path'], timeout=10)
-            c = conn.cursor()
-            c.execute(f"SELECT proxy FROM {proxy_type} WHERE response_time <= {t}")
-            new_proxies = set([row[0] for row in c.fetchall()])
-            proxies.update(new_proxies - proxies)
-            conn.close()
+                pass     
     except:
         pass
 
+def save_proxy_to_queue(proxy, rounded_resp_time, current_time):
+    db_queue.put((proxy, rounded_resp_time, current_time))
+
+# Функция для периодической записи данных из очереди в базу данных
+def db_writer():
+    conn = sqlite3.connect(config['database']['path'], timeout=30, check_same_thread=False)
+    c = conn.cursor()
+    c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+    conn.close()
+
+    while True:
+        try:
+            conn = sqlite3.connect(config['database']['path'], timeout=30)
+            c = conn.cursor()
+            try:
+                # Получаем все данные из очереди
+                while not db_queue.empty():
+                    proxy, rounded_resp_time, current_time = db_queue.get()
+                    c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
+                    db_queue.task_done()
+
+                # Записываем накопленные изменения
+                conn.commit()
+            except Exception as e:
+                print(f"Error while writing to database: {e}")
+                conn.rollback()
+        except Exception as e:
+            print(e)
+            continue
+        finally:
+            conn.close()
+            time.sleep(3)
+    
 def check_proxies():
     # Infinite loop to check proxies stored in memory
     while True:
         try:
             # If the proxies list is empty, wait for 1 second and continue the loop
             if not proxies:
-                time.sleep(1)
+                time.sleep(3)
                 continue
             # Use ThreadPoolExecutor for parallel proxy checking
             with ThreadPoolExecutor(max_workers=workers/2) as executor:
@@ -226,14 +251,7 @@ def check_proxies():
                         rounded_resp_time = round(rounded_resp_time, 2)
                         alive_proxies_set.add(proxy)
                         # If the database option is enabled, store the proxy information in the database
-                        if args.db:
-                            conn = sqlite3.connect(config['database']['path'],timeout = 30)
-                            c = conn.cursor()
-                            c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
-                            c.execute('BEGIN')
-                            c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
-                            c.execute('COMMIT')
-                            conn.close()
+                        save_proxy_to_queue(proxy, rounded_resp_time, current_time)
                     # If the result is None, the proxy is dead and should be removed from the proxies list
                     else:
                         proxy = futures[future]
@@ -369,10 +387,25 @@ def run_thread(func, interval):
         try:
             func()   
             time.sleep(interval)
-        except:
-            pass
+        except Exception as e:
+            print(e)
+            continue
 
 if __name__ == "__main__":
+    # If the args.db argument is specified, retrieve proxies from the database.
+    if args.db:
+        conn = sqlite3.connect(config['database']['path'], timeout=30, check_same_thread=False)
+        c = conn.cursor()
+        c.execute(f"SELECT proxy FROM {proxy_type} WHERE response_time <= {t}")
+        new_proxies = set([row[0] for row in c.fetchall()])
+        proxies.update(new_proxies - proxies)
+        conn.close()
+        
+    # Очередь для накопления данных
+    db_queue = queue.Queue()
+    db_writer_thread = threading.Thread(target=db_writer, daemon=True)
+    db_writer_thread.start()
+    
     if args.scan:
         scan_thread = threading.Thread(target=scan_ip_ranges)
         scan_thread.start()
@@ -390,7 +423,5 @@ if __name__ == "__main__":
         t3.start()
     t4.start()
     
-    t1.join()
     t2.join()
-    t3.join()
     t4.join()
