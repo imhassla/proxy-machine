@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 from sqlalchemy import create_engine, Table, MetaData, select
 from starlette.responses import JSONResponse, Response, HTMLResponse
+from threading import Thread
 from datetime import datetime, timedelta
 from typing import Optional
 import configparser
+import time
 
 # Load configuration
 config = configparser.ConfigParser()
@@ -24,6 +26,35 @@ http_table = Table('http', metadata, autoload_with=engine)
 https_table = Table('https', metadata, autoload_with=engine)
 socks4_table = Table('socks4', metadata, autoload_with=engine)
 socks5_table = Table('socks5', metadata, autoload_with=engine)
+
+# Global cache for proxies
+proxy_cache = {
+    "http": [],
+    "https": [],
+    "socks4": [],
+    "socks5": []
+}
+
+# Function to load proxies into memory
+def load_proxies_into_cache():
+    global proxy_cache
+    with engine.connect() as connection:
+        for proxy_type, table in [("http", http_table), ("https", https_table), ("socks4", socks4_table), ("socks5", socks5_table)]:
+            query = select(table.c.proxy, table.c.response_time, table.c.last_checked).order_by(table.c.response_time)
+            result = connection.execute(query).fetchall()
+            proxy_cache[proxy_type] = [
+                {column.name: value for column, value in zip(table.columns, row)}
+                for row in result
+            ]
+
+# Background thread to update proxy cache every 5 seconds
+def update_cache_periodically():
+    while True:
+        load_proxies_into_cache()
+        time.sleep(5)  # Sleep for 5 seconds before the next update
+
+# Start the cache updater in a separate thread
+Thread(target=update_cache_periodically, daemon=True).start()
 
 # Route to display API documentation
 @app.get("/", response_class=HTMLResponse)
@@ -70,36 +101,14 @@ async def get_proxy(proxy_type: str, time: Optional[float] = None, minutes: int 
     if proxy_type not in ["http", "https", "socks4", "socks5"]:
         return JSONResponse(status_code=400, content={"message": "Invalid proxy type"})
 
-    # Select the appropriate table based on the proxy type
-    if proxy_type == "http":
-        table = http_table
-    elif proxy_type == "https":
-        table = https_table
-    elif proxy_type == "socks4":
-        table = socks4_table
-    else:
-        table = socks5_table
-
     # Calculate the time threshold for filtering proxies
     time_threshold = datetime.now() - timedelta(minutes=minutes)
 
-    # Create a query to fetch proxies based on response time
-    if time is not None:
-        query = select(table.c.proxy, table.c.response_time, table.c.last_checked).where(
-            table.c.response_time <= time
-        ).order_by(table.c.response_time)
-    else:
-        query = select(table.c.proxy, table.c.response_time, table.c.last_checked).order_by(table.c.response_time)
-
-    # Execute the query and fetch results
-    with engine.connect() as connection:
-        result = connection.execute(query).fetchall()
-
-    # Filter proxies based on the last checked time
+    # Filter proxies from cache based on response time and last checked time
     proxies = [
-        {column.name: value for column, value in zip(table.columns, row)}
-        for row in result
-        if datetime.strptime(row[2], '%Y-%m-%d %H:%M:%S') >= time_threshold
+        proxy for proxy in proxy_cache[proxy_type]
+        if (time is None or proxy['response_time'] <= time) and
+           datetime.strptime(proxy['last_checked'], '%Y-%m-%d %H:%M:%S') >= time_threshold
     ]
 
     # Return the proxies in the requested format
