@@ -15,7 +15,6 @@ import socket
 import configparser
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import ThreadPoolExecutor
 from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
 from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError
 
