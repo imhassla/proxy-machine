@@ -24,6 +24,7 @@ config.read('config.ini')
 
 parser = argparse.ArgumentParser(description='The script checks uniq ip:port combinations from scan_results/ directory as http, https, socks4, socks5 proxies. ')
 parser.add_argument('-url', type=str, help='"URL" of the API to retrieve proxies from. Only ip:port format supported')
+parser.add_argument('-sip', type=str, help='"Self ip')
 parser.add_argument('-ping', action='store_true', help='ping "1.1.1.1" before check to enshure that network connection is availble )')
 parser.add_argument('-db', action='store_true', help='recheck all proxies in db')
 parser.add_argument('-clean', action='store_true', help='clean old unavailible proxies in db')
@@ -95,21 +96,24 @@ class Ping:
 if args.ping:
     pinger = Ping('1.1.1.1')
 
+if not args.sip:
 # Retrieve the user's IP address by making a request to httpbin.org
-while True:
-    try:
-        url = 'https://httpbin.org/ip'
-        # Make a GET request to retrieve the IP address
-        response = requests.get(url)
-        # Parse the response JSON data
-        data = response.json()
-        # Extract the IP address from the response data
-        sip = data.get('origin')
-        break  # Exit the loop if the request is successful
-    except Exception as e:
-        # Handle connection errors and retry after a short delay
-        print(f' Connection error: {e}. Retrying in 5 seconds...', end="\r")
-        time.sleep(5)
+    while True:
+        try:
+            url = 'https://httpbin.org/ip'
+            # Make a GET request to retrieve the IP address
+            response = requests.get(url)
+            # Parse the response JSON data
+            data = response.json()
+            # Extract the IP address from the response data
+            sip = data.get('origin')
+            break  # Exit the loop if the request is successful
+        except Exception as e:
+            # Handle connection errors and retry after a short delay
+            print(f' Connection error: {e}. Retrying in 5 seconds...', end="\r")
+            time.sleep(5)
+else:
+    sip = args.sip
 
 def process_page(page, ip_port_pattern):
     # Fetch the content of the page from freeproxy.world
