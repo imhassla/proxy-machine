@@ -75,6 +75,7 @@ async def get_documentation():
             <h2>Supported Proxy Types</h2>
             <ul>
                 <li><b>HTTP</b> </li>
+                <li><b>HTTPS</b> </li>
                 <li><b>SOCKS4</b> </li>
                 <li><b>SOCKS5</b> </li>
             </ul>
@@ -82,7 +83,7 @@ async def get_documentation():
             <p>Returns a list of proxies of the specified type.</p>
             <ul>
                 <li><b>proxy_type</b>: The type of proxy. </li>
-                <p>This can be either 'http', 'socks4' or 'socks5'. For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http'">/proxy/http</a> will return HTTP proxies.</p>
+                <p>This can be either 'http', 'https', 'socks4' or 'socks5'. For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http'">/proxy/http</a> will return HTTP proxies.</p>
                 <li><b>time</b>: The maximum response time of the proxies in seconds. </li>
                 <p>For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http?time=1.5'">/proxy/http?time=1.5</a> will return proxies with a response time of 1.5 seconds or less.</p>
                 <li><b>minutes</b>: The maximum number of minutes since the last check of the proxies. </li>
