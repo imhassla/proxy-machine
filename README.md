@@ -1,6 +1,6 @@
 # Proxy Machine
 
-- proxy.py - retrieves and checks HTTP, SOCKS4, and SOCKS5 proxies.
+- proxy.py - retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies.
 
 - scan.py - performs port scaning with socks4 socket using founded proxies.
 
