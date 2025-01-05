@@ -29,29 +29,32 @@ socks5_table = Table('socks5', metadata, autoload_with=engine)
 
 # Global cache for proxies
 proxy_cache = {
-    "http": [],
-    "https": [],
-    "socks4": [],
-    "socks5": []
+    "http": {},
+    "https": {},
+    "socks4": {},
+    "socks5": {}
 }
+
 
 # Function to load proxies into memory
 def load_proxies_into_cache():
     global proxy_cache
     with engine.connect() as connection:
         for proxy_type, table in [("http", http_table), ("https", https_table), ("socks4", socks4_table), ("socks5", socks5_table)]:
-            query = select(table.c.proxy, table.c.response_time, table.c.last_checked).order_by(table.c.response_time)
+            query = select(table.c.proxy, table.c.response_time, table.c.last_checked).where(
+                table.c.last_checked > proxy_cache.get(f"last_updated_{proxy_type}", datetime.min)
+            )
             result = connection.execute(query).fetchall()
-            proxy_cache[proxy_type] = [
-                {column.name: value for column, value in zip(table.columns, row)}
-                for row in result
-            ]
+            for row in result:
+                proxy = {column.name: value for column, value in zip(table.columns, row)}
+                proxy_cache[proxy_type][proxy['proxy']] = proxy
+            proxy_cache[f"last_updated_{proxy_type}"] = datetime.now()
 
 # Background thread to update proxy cache every 5 seconds
 def update_cache_periodically():
     while True:
         load_proxies_into_cache()
-        time.sleep(5)  # Sleep for 5 seconds before the next update
+        time.sleep(10)  # Sleep for 5 seconds before the next update
 
 # Start the cache updater in a separate thread
 Thread(target=update_cache_periodically, daemon=True).start()
@@ -107,7 +110,7 @@ async def get_proxy(proxy_type: str, time: Optional[float] = None, minutes: int 
 
     # Filter proxies from cache based on response time and last checked time
     proxies = [
-        proxy for proxy in proxy_cache[proxy_type]
+        proxy for proxy in proxy_cache[proxy_type].values()
         if (time is None or proxy['response_time'] <= time) and
            datetime.strptime(proxy['last_checked'], '%Y-%m-%d %H:%M:%S') >= time_threshold
     ]
