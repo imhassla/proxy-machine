@@ -15,8 +15,12 @@ import socket
 import configparser
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from socks import set_default_proxy, SOCKS4, SOCKS5, HTTP, socksocket
-from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError
+from socks import set_default_proxy, SOCKS4, SOCKS5, socksocket
+from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError, NewConnectionError
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load configuration
 config = configparser.ConfigParser()
@@ -69,8 +73,11 @@ while True:
         sip = data.get('origin')
         break
     except Exception as e:
-        print(f' Connection error: {e}. Retrying in 5 seconds...',end="\r")
+        logging.warning(f'Connection error: {e}. Retrying in 5 seconds...')
         time.sleep(5)
+
+# Create a global connection pool for HTTP/HTTPS proxies
+http_pool = urllib3.PoolManager(maxsize=10)
 
 # Function to check proxies
 def check_proxy(proxy, proxy_type):
@@ -81,8 +88,10 @@ def check_proxy(proxy, proxy_type):
         url = 'https://httpbin.org/ip'
         
         if proxy_type in ['http', 'https']:
+            # Use a ProxyManager for HTTP/HTTPS proxies
+            proxy_url = f"{proxy_type}://{proxy_host}:{proxy_port}"
             http = urllib3.ProxyManager(
-                f"{proxy_type}://{proxy_host}:{proxy_port}",
+                proxy_url,
                 timeout=urllib3.Timeout(connect=args.t, read=args.t),
                 retries=False,
                 cert_reqs='CERT_NONE',
@@ -92,13 +101,16 @@ def check_proxy(proxy, proxy_type):
             response = http.request('GET', url, preload_content=False)
             response_time = time.time() - start_time
             data = json.loads(response.data.decode('utf-8'))
+            response.release_conn()  # Ensure the connection is released
             
             if any(origin == sip for origin in data.get('origin').split(', ')):
                 return None
             else:
+                logging.info(f"Successful proxy: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
                 return f'{proxy_host}:{proxy_port}', response_time, current_time
         
         elif proxy_type in ['socks4', 'socks5']:
+            # Use socks for SOCKS proxies
             socks.set_default_proxy(SOCKS4 if proxy_type == 'socks4' else SOCKS5, proxy_host, int(proxy_port))
             socket.socket = socks.socksocket
             headers = {'X-Forwarded-For': proxy_host}
@@ -111,11 +123,16 @@ def check_proxy(proxy, proxy_type):
                 if any(origin == sip for origin in data.get('origin').split(', ')):
                     return None
                 else:
+                    logging.info(f"Successful proxy: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
                     return f'{proxy_host}:{proxy_port}', response_time, current_time
     
-    except (Exception, SSLError, ProxyError, ConnectTimeoutError, ReadTimeoutError) as e:
+    except (NewConnectionError, SSLError, ProxyError, ConnectTimeoutError, ReadTimeoutError) as e:
+        if isinstance(e, NewConnectionError) and "Too many open files" in str(e):
+            logging.warning("Too many open files error encountered.")
         return None
-    
+    except Exception as e:
+        logging.debug(f"Unexpected error checking proxy {proxy}: {e}")
+        return None
     finally:
         socks.set_default_proxy()
         socket.socket = socket.socket
@@ -130,8 +147,8 @@ def get_proxies():
             response = requests.get(api_url)
             new_proxies = set(response.text.splitlines())
             proxies.update(new_proxies - proxies)
-        except:
-            pass
+        except Exception as e:
+            logging.debug(f"Error fetching proxies from API: {e}")
 
         additional_sources = [
             f"https://www.proxy-list.download/api/v1/get?type={proxy_type}",
@@ -148,10 +165,10 @@ def get_proxies():
                 response = requests.get(source)
                 new_proxies = set(line.strip() for line in response.text.splitlines() if ip_port_pattern.match(line.strip()))
                 proxies.update(new_proxies - proxies)
-            except:
-                pass     
-    except:
-        pass
+            except Exception as e:
+                logging.debug(f"Error fetching proxies from source {source}: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error in get_proxies: {e}")
 
 # Function to save proxy details to the queue
 def save_proxy_to_queue(proxy, rounded_resp_time, current_time):
@@ -174,7 +191,7 @@ def db_writer():
                 db_queue.task_done()
             conn.commit()
         except Exception as e:
-            print(f"Database write error: {e}")
+            logging.error(f"Database write error: {e}")
             conn.rollback()
         finally:
             conn.close()
@@ -198,8 +215,8 @@ def check_proxies():
                         save_proxy_to_queue(proxy, rounded_resp_time, current_time)
                     else:
                         proxies.discard(futures[future])
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Error in check_proxies: {e}")
 
 # Function to recheck alive proxies periodically
 def recheck_alive_proxies():
@@ -212,8 +229,8 @@ def recheck_alive_proxies():
                     if future.result() is None:
                         alive_proxies_set.discard(futures[future])
             time.sleep(10)
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Error in recheck_alive_proxies: {e}")
 
 # Function to track proxy statistics
 def track_proxies():
@@ -309,8 +326,7 @@ def run_thread(func, interval):
             func()   
             time.sleep(interval)
         except Exception as e:
-            print(e)
-            continue
+            logging.error(f"Error in run_thread: {e}")
 
 # Main execution
 if __name__ == "__main__":

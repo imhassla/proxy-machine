@@ -28,8 +28,12 @@ async def update_proxies():
 
 # Function to fetch a URL using a given proxy
 async def fetch(session, url, proxy=None):
-    async with session.get(url, proxy=proxy) as response:
-        return await response.text()
+    try:
+        async with session.get(url, proxy=proxy, timeout=5) as response:
+            return await response.text()
+    except Exception as e:
+        print(f"Error fetching URL with proxy {proxy}: {e}")
+        return None
 
 # HTTP request handler
 async def handle(request):
@@ -41,15 +45,9 @@ async def handle(request):
     async with aiohttp.ClientSession() as session:
         for _ in range(15):
             proxy = 'http://' + random.choice(proxies)
-            try:
-                # Attempt to fetch the URL using a proxy
-                resp = await asyncio.wait_for(fetch(session, url, proxy), timeout=5)
+            resp = await fetch(session, url, proxy)
+            if resp:
                 return web.Response(text=resp)
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                print(f"Error with proxy {proxy}: {e}")
-                continue
     
     return web.Response(text="Failed to get a response from the server after 15 attempts", status=502)  # Return 502 Bad Gateway
 

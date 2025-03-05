@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from sqlalchemy import create_engine, Table, MetaData, select
+from sqlalchemy.orm import sessionmaker
 from starlette.responses import JSONResponse, Response, HTMLResponse
 from threading import Thread
 from datetime import datetime, timedelta
@@ -13,11 +14,15 @@ config.read('config.ini')
 
 app = FastAPI()
 
-# Create a connection to the SQLite database
+# Create a connection to the SQLite database with connection pooling
 engine = create_engine(
     f"sqlite:///{config['database']['path']}",
-    connect_args={'timeout': 30}  # Set a timeout for the database connection
+    connect_args={'timeout': 30},  # Set a timeout for the database connection
+    pool_size=5,  # Set pool size for connection pooling
+    max_overflow=10  # Allow some overflow connections
 )
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 metadata = MetaData()
 
@@ -35,14 +40,14 @@ proxy_cache = {
     "socks5": {}
 }
 
-
 # Function to load proxies into memory
 def load_proxies_into_cache():
     global proxy_cache
     with engine.connect() as connection:
         for proxy_type, table in [("http", http_table), ("https", https_table), ("socks4", socks4_table), ("socks5", socks5_table)]:
+            last_checked = proxy_cache.get(f"last_updated_{proxy_type}", datetime.min)
             query = select(table.c.proxy, table.c.response_time, table.c.last_checked).where(
-                table.c.last_checked > proxy_cache.get(f"last_updated_{proxy_type}", datetime.min)
+                table.c.last_checked > last_checked
             )
             result = connection.execute(query).fetchall()
             for row in result:
@@ -50,11 +55,11 @@ def load_proxies_into_cache():
                 proxy_cache[proxy_type][proxy['proxy']] = proxy
             proxy_cache[f"last_updated_{proxy_type}"] = datetime.now()
 
-# Background thread to update proxy cache every 5 seconds
+# Background thread to update proxy cache every 10 seconds
 def update_cache_periodically():
     while True:
         load_proxies_into_cache()
-        time.sleep(10)  # Sleep for 5 seconds before the next update
+        time.sleep(10)  # Sleep for 10 seconds before the next update
 
 # Start the cache updater in a separate thread
 Thread(target=update_cache_periodically, daemon=True).start()
