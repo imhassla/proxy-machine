@@ -35,6 +35,7 @@ parser.add_argument('-p', type=int, default=5000, help='ping (ms) of the proxy s
 parser.add_argument('-t', type=int, default=5, help='timeout (s) for checker')
 parser.add_argument('-w', type=int, default=200, help='number of worker threads for proxy checking')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
+parser.add_argument('-https_strict', action='store_true', help='for -type https, only accept proxies that work with HTTPS proxy scheme (TLS to proxy)')
 parser.add_argument('-api', action='store_true', help='skip tracking proxies if specified')
 parser.add_argument('-scan', action='store_true', help='run scan.py for checked proxy IP ranges if specified')
 parser.add_argument('-sw', type=int, default=3, help='number of scanner worker threads')
@@ -92,26 +93,42 @@ def check_proxy(proxy, proxy_type):
         url = 'https://httpbin.org/ip'
         
         if proxy_type in ['http', 'https']:
-            # Use a ProxyManager for HTTP/HTTPS proxies
-            proxy_url = f"{proxy_type}://{proxy_host}:{proxy_port}"
-            http = urllib3.ProxyManager(
-                proxy_url,
-                timeout=urllib3.Timeout(connect=args.t, read=args.t),
-                retries=False,
-                cert_reqs='CERT_NONE',
-                assert_hostname=False
-            )
-            start_time = time.time()
-            response = http.request('GET', url, preload_content=False)
-            response_time = time.time() - start_time
-            data = json.loads(response.data.decode('utf-8'))
-            response.release_conn()  # Ensure the connection is released
-            
-            if any(origin == sip for origin in data.get('origin').split(', ')):
-                return None
+            # Many public lists label proxies as "https" when they are HTTP CONNECT proxies.
+            # True HTTPS proxies also exist (TLS to the proxy). Try both for 'https' type.
+            if proxy_type == 'http':
+                schemes_to_try = ['http']
             else:
-                logging.info(f"Successful proxy: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
-                return f'{proxy_host}:{proxy_port}', response_time, current_time
+                schemes_to_try = ['https'] if args.https_strict else ['http', 'https']
+            last_error = None
+            for proxy_scheme in schemes_to_try:
+                try:
+                    proxy_url = f"{proxy_scheme}://{proxy_host}:{proxy_port}"
+                    http = urllib3.ProxyManager(
+                        proxy_url,
+                        timeout=urllib3.Timeout(connect=args.t, read=args.t),
+                        retries=False,
+                        cert_reqs='CERT_NONE',
+                        assert_hostname=False
+                    )
+                    start_time = time.time()
+                    response = http.request('GET', url)
+                    response_time = time.time() - start_time
+                    data = json.loads(response.data.decode('utf-8'))
+                    response.release_conn()
+
+                    sip_ips = [ip.strip() for ip in str(sip).split(',') if ip.strip()]
+                    origin_ips = [ip.strip() for ip in str(data.get('origin', '')).split(',') if ip.strip()]
+                    is_masking = any(ip not in sip_ips for ip in origin_ips)
+                    if not is_masking:
+                        # Not masking; try next scheme if available
+                        continue
+                    logging.info(f"Successful HTTPS target via proxy_scheme={proxy_scheme}: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
+                    return f'{proxy_host}:{proxy_port}', response_time, current_time
+                except (NewConnectionError, SSLError, ProxyError, ConnectTimeoutError, ReadTimeoutError) as e:
+                    last_error = e
+                    continue
+            # If neither scheme worked/masked, treat as invalid
+            return None
         
         elif proxy_type in ['socks4', 'socks5']:
             # Use socks for SOCKS proxies
@@ -124,12 +141,14 @@ def check_proxy(proxy, proxy_type):
             if r.status_code == 200:
                 response_time = r.elapsed.total_seconds()
                 data = r.json()
-                
-                if any(origin == sip for origin in data.get('origin').split(', ')):
+
+                sip_ips = [ip.strip() for ip in str(sip).split(',') if ip.strip()]
+                origin_ips = [ip.strip() for ip in str(data.get('origin', '')).split(',') if ip.strip()]
+                is_masking = any(ip not in sip_ips for ip in origin_ips)
+                if not is_masking:
                     return None
-                else:
-                    logging.info(f"Successful proxy: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
-                    return f'{proxy_host}:{proxy_port}', response_time, current_time
+                logging.info(f"Successful proxy: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
+                return f'{proxy_host}:{proxy_port}', response_time, current_time
     
     except (NewConnectionError, SSLError, ProxyError, ConnectTimeoutError, ReadTimeoutError) as e:
         if isinstance(e, NewConnectionError) and "Too many open files" in str(e):
