@@ -6,9 +6,8 @@
 
 - checker.py - checks all types of proxies from scan_results or custom API '-url'
 
-- start.py - runs proxy delivery and checking, starts local hosted (http://127.0.0.1:8000) API service for HTTP SOCKS4 and SOCKS5 proxies,
-  starts local http proxy server (http://127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local APi
-
+- start.py - runs proxy delivery and checking, starts local hosted (http://127.0.0.1:8000) API service.
+  runs local http proxy server (http://127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local APi
 
 The availability of all proxies is checked using a GET request to https://httpbin.org/ip. 
 
@@ -17,23 +16,28 @@ Only those proxies that do not reveal the current external address of the system
 Every script can be run from the command line with several optional arguments to specify the requred ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, URL of the API to retrieve proxies from   
 
 ## Install
-python3-full and python3-pip required:
+With venv environment (python3-full and python3-pip required):
+
 ```bash
 sudo apt update && sudo apt install git python3-full python3-pip -y
-```
-  
-Clone repo and install dependencies:
-```bash
 git clone https://github.com/imhassla/proxy-machine.git
 cd proxy-machine
 python3 -m venv env
 source env/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+With docker:
+```bash
+git clone https://github.com/imhassla/proxy-machine.git
+cd proxy-machine
+docker build -t proxy_machine .
+docker run -it --rm -v "$(pwd)":/app -p 8000:8000 -p 3333:3333 proxy_machine
+```
 
 ## Usage
-Start the Machine!
+To start the Machine just run container or:
 ```bash
 python3 start.py
 ```
@@ -75,6 +79,10 @@ runs proxy.py in background to retrieve socks4 proxies and perform port scan owe
 
 ```bash
 python3 checker.py -list
+```
+or:
+```bash
+docker run -it --rm -v "$(pwd)":/app -p 8000:8000 -p 3333:3333 proxy_machine checker.py -list
 ```
 chech all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from open sources, print results and store proxies in data.db.
 
