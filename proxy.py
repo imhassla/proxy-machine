@@ -82,7 +82,8 @@ http_pool = urllib3.PoolManager(maxsize=10)
 # Function to check proxies
 def check_proxy(proxy, proxy_type):
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
+    original_socket = socket.socket
+
     try:
         proxy_host, proxy_port = proxy.split(':')
         url = 'https://httpbin.org/ip'
@@ -111,6 +112,7 @@ def check_proxy(proxy, proxy_type):
         
         elif proxy_type in ['socks4', 'socks5']:
             # Use socks for SOCKS proxies
+            original_socket = socket.socket
             socks.set_default_proxy(SOCKS4 if proxy_type == 'socks4' else SOCKS5, proxy_host, int(proxy_port))
             socket.socket = socks.socksocket
             headers = {'X-Forwarded-For': proxy_host}
@@ -135,7 +137,7 @@ def check_proxy(proxy, proxy_type):
         return None
     finally:
         socks.set_default_proxy()
-        socket.socket = socket.socket
+        socket.socket = original_socket
     
     return None
 
