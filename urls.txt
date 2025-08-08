@@ -29,10 +29,10 @@ https://github.com/prxchk/proxy-list/blob/main/http.txt
 https://github.com/prxchk/proxy-list/blob/main/socks4.txt
 https://github.com/prxchk/proxy-list/blob/main/socks5.txt
 https://github.com/saisuiu/Lionkings-Http-Proxys-Proxies/blob/main/free.txt
-https://github.com/ObcbO/getproxy/blob/master/http.txt
-https://github.com/ObcbO/getproxy/blob/master/https.txt
-https://github.com/ObcbO/getproxy/blob/master/socks4.txt
-https://github.com/ObcbO/getproxy/blob/master/socks5.txt
+https://github.com/ShiftyTR/Proxy-List/blob/master/http.txt
+https://github.com/ShiftyTR/Proxy-List/blob/master/https.txt
+https://github.com/ShiftyTR/Proxy-List/blob/master/socks4.txt
+https://github.com/ShiftyTR/Proxy-List/blob/master/socks5.txt
 https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/http_proxies.txt
 https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/https_proxies.txt
 https://github.com/Anonym0usWork1221/Free-Proxies/blob/main/proxy_files/socks4_proxies.txt
