@@ -2,18 +2,18 @@
 
 - proxy.py - retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies.
 
-- scan.py - performs port scaning with socks4 socket using founded proxies.
+- scan.py - performs port scanning with a SOCKS4 socket using found proxies.
 
 - checker.py - checks all types of proxies from scan_results or custom API '-url'
 
 - start.py - runs proxy delivery and checking, starts local hosted (http://127.0.0.1:8000) API service.
-  runs local http proxy server (http://127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local APi
+  runs local http proxy server (http://127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local API
 
 The availability of all proxies is checked using a GET request to https://httpbin.org/ip. 
 
 Only those proxies that do not reveal the current external address of the system where the proxy checker is running are marked as available and alive.
 
-Every script can be run from the command line with several optional arguments to specify the requred ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, URL of the API to retrieve proxies from   
+Every script can be run from the command line with several optional arguments to specify the required ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, and the URL of the API to retrieve proxies from
 
 ## Install
 With venv environment (python3-full and python3-pip required):
@@ -41,13 +41,13 @@ To start the Machine just run container or:
 ```bash
 python3 start.py
 ```
-To start proxy checks of all types and run uvicorn server for local Proxy-Machine APi service.
+To start proxy checks of all types and run uvicorn server for local Proxy-Machine API service.
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-start.png)
 
-Let's go with web-browser to http://127.0.0.1:8000, which is provided to us by uvicorn to see the APi doc:
+Let's go with web-browser to http://127.0.0.1:8000, which is provided to us by uvicorn to see the API doc:
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-doc.png)
 
-Curl usage of APi:
+Curl usage of API:
 ```bash
 curl 'http://127.0.0.1:8000/proxy/http?time=2&minutes=2&format=text'
 ```
@@ -73,7 +73,7 @@ While running, it will periodically retrieve, check, and track proxies, updating
 ```bash
 python3 scan.py -range 1.1.1.0/24 1.2.3.0/24 -port 53 80 8080
 ```
-runs proxy.py in background to retrieve socks4 proxies and perform port scan ower founded proxies for all ip-range with every selected port
+runs proxy.py in the background to retrieve SOCKS4 proxies and perform port scans over found proxies for all IP ranges with every selected port
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_scan.png)
 
@@ -84,7 +84,7 @@ or:
 ```bash
 docker run -it --rm -v "$(pwd)":/app -p 8000:8000 -p 3333:3333 proxy_machine checker.py -list
 ```
-chech all HTTP, HTTPS, SOCKS4, and SOCKS5 proxy from open sources, print results and store proxies in data.db.
+check all HTTP, HTTPS, SOCKS4, and SOCKS5 proxies from open sources, print results, and store proxies in data.db.
 
 
 ```bash
