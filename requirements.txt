@@ -8,3 +8,5 @@ sqlalchemy
 uvicorn
 aiohttp
 asyncio
+pytest
+httpx
