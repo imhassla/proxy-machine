@@ -19,6 +19,9 @@ from socks import set_default_proxy, SOCKS4, SOCKS5, socksocket
 from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError, NewConnectionError
 import logging
 
+# Save the original socket to restore after proxy checks
+original_socket = socket.socket
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -135,7 +138,8 @@ def check_proxy(proxy, proxy_type):
         return None
     finally:
         socks.set_default_proxy()
-        socket.socket = socket.socket
+        # Restore the original socket to avoid affecting other connections
+        socket.socket = original_socket
     
     return None
 
