@@ -39,16 +39,16 @@ parser.add_argument('-db', action='store_true', help='store checked proxies in d
 parser.add_argument('-url', type=str, help='URL of the API to retrieve proxies from')
 args = parser.parse_args()
 
-# Clear the screen
+# Increase max open file descriptors
 os.system('ulimit -n 50000')
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Initialize a set to store the proxies and other variables for tracking proxy statistics and availability
+# Initialize proxy tracking structures and statistics
 proxy_type = args.type
 proxies = set()
 alive_proxies_set = set()
-semaphore = threading.Semaphore(args.sw) 
+semaphore = threading.Semaphore(args.sw)
 proxy_stats = {}
 
 t = args.t
