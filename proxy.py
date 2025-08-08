@@ -140,10 +140,7 @@ def check_proxy(proxy, proxy_type):
         return None
     finally:
         socks.set_default_proxy()
-<<<<<<< HEAD
         # Restore the original socket to avoid affecting other connections
-=======
->>>>>>> pr/5
         socket.socket = original_socket
     
     return None
