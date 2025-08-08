@@ -11,9 +11,6 @@ https://github.com/mmpx12/proxy-list/blob/master/socks4.txt
 https://github.com/mmpx12/proxy-list/blob/master/socks5.txt
 https://github.com/zevtyardt/proxy-list/blob/main/all.txt
 https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt
-https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/https.txt
-https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/socks4.txt
-https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/socks5.txt
 https://github.com/proxy4parsing/proxy-list/blob/main/http.txt
 https://github.com/roosterkid/openproxylist/blob/main/HTTPS_RAW.txt
 https://github.com/roosterkid/openproxylist/blob/main/SOCKS4_RAW.txt
