@@ -3,6 +3,13 @@ import threading
 import requests
 import queue
 import sqlite3
+from db_utils import (
+    get_db_path,
+    get_connection,
+    ensure_proxy_table,
+    upsert_proxy,
+    select_proxies_by_response_time,
+)
 import random
 import urllib3
 import time
@@ -133,18 +140,16 @@ def save_proxy_to_queue(proxy, rounded_resp_time, current_time):
 
 # Function to periodically write queue data to database
 def db_writer():
-    conn = sqlite3.connect(config['database']['path'], timeout=30, check_same_thread=False)
-    c = conn.cursor()
-    c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+    conn = get_connection(get_db_path(), timeout=30, check_same_thread=False)
+    ensure_proxy_table(conn, proxy_type)
     conn.close()
 
     while True:
         try:
-            conn = sqlite3.connect(config['database']['path'], timeout=30)
-            c = conn.cursor()
+            conn = get_connection(get_db_path(), timeout=30)
             while not db_queue.empty():
                 proxy, rounded_resp_time, current_time = db_queue.get()
-                c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (proxy, rounded_resp_time, current_time))
+                upsert_proxy(conn, proxy_type, proxy, rounded_resp_time, current_time)
                 db_queue.task_done()
             conn.commit()
         except Exception as e:
@@ -289,10 +294,8 @@ def run_thread(func, interval):
 if __name__ == "__main__":
     
     if args.db:
-        conn = sqlite3.connect(config['database']['path'], timeout=30, check_same_thread=False)
-        c = conn.cursor()
-        c.execute(f"SELECT proxy FROM {proxy_type} WHERE response_time <= {t}")
-        new_proxies = set([row[0] for row in c.fetchall()])
+        conn = get_connection(get_db_path(), timeout=30, check_same_thread=False)
+        new_proxies = set(select_proxies_by_response_time(conn, proxy_type, t))
         proxies.update(new_proxies - proxies)
         conn.close()
 

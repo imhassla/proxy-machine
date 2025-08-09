@@ -4,6 +4,13 @@ import time
 import socks
 import socket
 import sqlite3
+from db_utils import (
+    get_db_path,
+    get_connection,
+    ensure_proxy_table,
+    ensure_proxy_tables,
+    upsert_proxy,
+)
 import requests
 import urllib3
 import argparse
@@ -141,7 +148,7 @@ def check_proxy(proxy, proxy_type):
     )
 
 def get_db_connection():
-    return sqlite3.connect(config['database']['path'], timeout=30)
+    return get_connection(get_db_path(), timeout=30)
 
 def load_urls_from_file(file_path) -> List[str]:
     with open(file_path, 'r') as file:
@@ -271,8 +278,7 @@ if __name__ == '__main__':
         logging.info(f'Checking {proxy_type} proxies...')
         
         with closing(get_db_connection()) as conn:
-            c = conn.cursor()
-            c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
+            ensure_proxy_table(conn, proxy_type)
             conn.commit()
         
         checked_proxies = []
@@ -323,8 +329,7 @@ if __name__ == '__main__':
             rounded_resp_time = round(checked_proxy[1], 2)
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             with closing(get_db_connection()) as conn:
-                c = conn.cursor()
-                c.execute(f'''INSERT OR REPLACE INTO {proxy_type} (proxy, response_time, last_checked) VALUES (?, ?, ?)''', (checked_proxy[0], rounded_resp_time, current_time))
+                upsert_proxy(conn, proxy_type, checked_proxy[0], rounded_resp_time, current_time)
                 logging.info(f"{proxy_type} {checked_proxy[0]} {rounded_resp_time} s.")
                 data_written = True
                 conn.commit()

@@ -5,6 +5,7 @@ import socks
 import atexit
 import random
 import sqlite3
+from db_utils import get_db_path, get_connection, ensure_scan_results_table, bulk_insert_scan_results
 import socket
 import argparse
 import datetime
@@ -166,12 +167,11 @@ def scan_ips(max_threads=num_threads):
              
                 sys.stdout.flush()    
         if data_to_write:
-            conn = sqlite3.connect('data.db',timeout = 10)
-            c = conn.cursor()
-            c.execute(f'''CREATE TABLE IF NOT EXISTS {'_scan_results'} (ip_port TEXT PRIMARY KEY)''')
-            c.execute('BEGIN')
-            c.executemany(f'''INSERT OR REPLACE INTO _scan_results (ip_port) VALUES (?)''', data_to_write)
-            c.execute('COMMIT')
+            conn = get_connection(get_db_path(), timeout=10)
+            ensure_scan_results_table(conn)
+            conn.execute('BEGIN')
+            bulk_insert_scan_results(conn, [row[0] for row in data_to_write])
+            conn.execute('COMMIT')
             data_to_write = []
             conn.close()
 

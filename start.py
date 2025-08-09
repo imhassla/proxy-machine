@@ -3,6 +3,7 @@ import time
 import signal
 import os
 import sqlite3
+from db_utils import get_db_path, get_connection, ensure_proxy_table
 import logging
 import configparser
 import requests
@@ -16,16 +17,13 @@ config.read('config.ini')
 
 # List of proxy types
 proxy_types = ['http', 'https', 'socks4', 'socks5']
+db_path = get_db_path()
 for proxy_type in proxy_types:
     try:
-        # Connect to SQLite database with a timeout of 30 seconds
-        conn = sqlite3.connect(config['database']['path'], timeout=30)
-        c = conn.cursor()
-        # Create table for each proxy type if it doesn't already exist
-        c.execute(f'''CREATE TABLE IF NOT EXISTS {proxy_type} (proxy TEXT PRIMARY KEY, response_time REAL, last_checked TEXT)''')
-        c.execute('BEGIN')  # Begin transaction
-        c.execute('COMMIT')  # Commit transaction
-        conn.close()  # Close the database connection
+        conn = get_connection(db_path, timeout=30)
+        ensure_proxy_table(conn, proxy_type)
+        conn.commit()
+        conn.close()
     except Exception as e:
         logging.error(f"Error setting up database for {proxy_type}: {e}")
 
