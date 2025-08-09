@@ -33,7 +33,6 @@ parser.add_argument('-p', type=int, default=5000, help='ping (ms) of the proxy s
 parser.add_argument('-t', type=int, default=5, help='timeout (s) for checker')
 parser.add_argument('-w', type=int, default=200, help='number of worker threads for proxy checking')
 parser.add_argument('-type', type=str, default='socks4', choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
-parser.add_argument('-https_strict', action='store_true', help='for -type https, only accept proxies that work with HTTPS proxy scheme (TLS to proxy)')
 parser.add_argument('-api', action='store_true', help='skip tracking proxies if specified')
 parser.add_argument('-scan', action='store_true', help='run scan.py for checked proxy IP ranges if specified')
 parser.add_argument('-sw', type=int, default=3, help='number of scanner worker threads')
@@ -87,7 +86,6 @@ def check_proxy(proxy, proxy_type):
         proxy_type=proxy_type,
         sip=sip,
         timeout_seconds=args.t,
-        https_strict=args.https_strict,
         target_url=target_url,
     )
 

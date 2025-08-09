@@ -22,7 +22,6 @@ def check_proxy(
     proxy_type: str,
     sip: str,
     timeout_seconds: int,
-    https_strict: bool,
     target_url: str,
 ) -> Optional[Tuple[str, float, str]]:
     """
@@ -37,11 +36,8 @@ def check_proxy(
         proxy_host, proxy_port = proxy.split(':')
 
         if proxy_type in ['http', 'https']:
-            # For 'https' type, try true HTTPS-to-proxy unless disabled; for 'http' only HTTP CONNECT.
-            if proxy_type == 'http':
-                schemes_to_try = ['http']
-            else:
-                schemes_to_try = ['https'] if https_strict else ['http', 'https']
+            # Strict by default: for 'http' use HTTP CONNECT; for 'https' require TLS to proxy
+            schemes_to_try = ['http'] if proxy_type == 'http' else ['https']
 
             for proxy_scheme in schemes_to_try:
                 try:

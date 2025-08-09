@@ -37,7 +37,6 @@ parser.add_argument('-clean', action='store_true', help='clean old unavailable p
 parser.add_argument('-txt', action='store_true', help='save results in txt/proxy_type.txt')
 parser.add_argument('-scan', action='store_true', help='check scan results and clear "scan_results" table in db')
 parser.add_argument('-type', nargs='+', type=str, default=None, choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
-parser.add_argument('-https_strict', action='store_true', help='for -type https, only accept proxies that work with HTTPS proxy scheme (TLS to proxy)')
 parser.add_argument('-mass', type=str, help='Absolute path to the masscan XML file')
 parser.add_argument('-list', action='store_true', help='check proxy from open sources')
 parser.add_argument('-targets', action='store_true', help='check proxy from targets.txt')
@@ -134,7 +133,6 @@ def check_proxy(proxy, proxy_type):
         proxy_type=proxy_type,
         sip=sip,
         timeout_seconds=args.t,
-        https_strict=args.https_strict,
         target_url=target_url,
     )
 

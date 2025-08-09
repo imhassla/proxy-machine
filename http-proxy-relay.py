@@ -3,6 +3,7 @@ from aiohttp import web
 import random
 import asyncio
 import time
+import argparse
 
 proxies = []
 last_update = None
@@ -51,15 +52,22 @@ async def handle(request):
     
     return web.Response(text="Failed to get a response from the server after 15 attempts", status=502)  # Return 502 Bad Gateway
 
-# Create the web application
-app = web.Application()
-app.router.add_get('/{url:.*}', handle)
+def main():
+    parser = argparse.ArgumentParser(description='HTTP proxy relay')
+    parser.add_argument('-port', type=int, default=3333, help='port to run relay on')
+    parser.add_argument('-host', type=str, default='0.0.0.0', help='host to bind relay')
+    args = parser.parse_args()
 
-# On startup, start updating the proxies
-async def on_startup(app):
-    app['update_proxies'] = asyncio.create_task(update_proxies())
+    app = web.Application()
+    app.router.add_get('/{url:.*}', handle)
 
-app.on_startup.append(on_startup)
+    async def on_startup(app):
+        app['update_proxies'] = asyncio.create_task(update_proxies())
 
-# Run the web application
-web.run_app(app, host='0.0.0.0', port=3333)
+    app.on_startup.append(on_startup)
+
+    web.run_app(app, host=args.host, port=args.port)
+
+
+if __name__ == '__main__':
+    main()
