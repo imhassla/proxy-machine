@@ -2,7 +2,6 @@ import subprocess
 import threading
 import requests
 import queue
-import sqlite3
 from db_utils import (
     get_db_path,
     get_connection,
@@ -16,20 +15,10 @@ import time
 import os
 import re
 import argparse
-import json
-import socks
-import socket
 import configparser
-import ssl
 from proxy_utils import check_proxy as shared_check_proxy
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from socks import set_default_proxy, SOCKS4, SOCKS5, socksocket
-from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError, NewConnectionError
 import logging
-
-# Save the original socket to restore after proxy checks
-original_socket = socket.socket
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -89,8 +78,7 @@ while True:
         logging.warning(f'Connection error: {e}. Retrying in 5 seconds...')
         time.sleep(5)
 
-# Create a global connection pool for HTTP/HTTPS proxies
-http_pool = urllib3.PoolManager(maxsize=10)
+# Note: per-proxy ProxyManager is constructed in proxy_utils; no global pool here
 
 def check_proxy(proxy, proxy_type):
     target_url = 'https://httpbin.org/ip'
@@ -106,7 +94,12 @@ def check_proxy(proxy, proxy_type):
 # Function to retrieve proxies from API and additional sources
 def get_proxies():
     try:
-        socks.set_default_proxy()
+        # Ensure no global SOCKS proxy is set before HTTP fetches
+        try:
+            import socks as _socks
+            _socks.set_default_proxy()
+        except Exception:
+            pass
         try:
             response = requests.get(api_url)
             new_proxies = set(response.text.splitlines())

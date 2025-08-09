@@ -4,11 +4,9 @@ import time
 import socks
 import atexit
 import random
-import sqlite3
 from db_utils import get_db_path, get_connection, ensure_scan_results_table, bulk_insert_scan_results
 import socket
 import argparse
-import datetime
 import ipaddress
 import threading
 import subprocess

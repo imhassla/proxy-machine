@@ -1,20 +1,15 @@
 import os
 import re
 import time
-import socks
-import socket
-import sqlite3
 from db_utils import (
     get_db_path,
     get_connection,
     ensure_proxy_table,
-    ensure_proxy_tables,
     upsert_proxy,
 )
 import requests
 import urllib3
 import argparse
-import json
 import threading
 import subprocess
 import configparser
@@ -22,11 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from contextlib import closing
 import xml.etree.ElementTree as ET
-from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError, NewConnectionError
 import logging
-from urllib3 import PoolManager
 from typing import List, Set
-import ssl
 from proxy_utils import check_proxy as shared_check_proxy
 
 # Setup logging
@@ -133,8 +125,7 @@ def process_page(page, ip_port_pattern):
         logging.error(f"Error processing page {page}: {e}")
         return []
 
-# Create a global connection pool
-http_pool = PoolManager(maxsize=10)  # Adjust maxsize as needed
+# Note: per-proxy ProxyManager is used in proxy_utils; no global pool needed here
 
 def check_proxy(proxy, proxy_type):
     target_url = 'https://httpbin.org/ip'

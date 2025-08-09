@@ -1,7 +1,7 @@
 import sqlite3
 import configparser
 from contextlib import contextmanager
-from typing import Iterable, List, Tuple
+from typing import Iterable, List
 
 
 def get_db_path(config_path: str = 'config.ini') -> str:
