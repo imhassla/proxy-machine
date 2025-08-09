@@ -18,6 +18,9 @@ import xml.etree.ElementTree as ET
 from urllib3.exceptions import ProxyError, SSLError, ConnectTimeoutError, ReadTimeoutError, NewConnectionError
 import logging
 from urllib3 import PoolManager
+from typing import List, Set
+import ssl
+from proxy_utils import check_proxy as shared_check_proxy
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -35,6 +38,7 @@ parser.add_argument('-clean', action='store_true', help='clean old unavailable p
 parser.add_argument('-txt', action='store_true', help='save results in txt/proxy_type.txt')
 parser.add_argument('-scan', action='store_true', help='check scan results and clear "scan_results" table in db')
 parser.add_argument('-type', nargs='+', type=str, default=None, choices=['http', 'https', 'socks4', 'socks5'], help='type of proxies to retrieve and check')
+parser.add_argument('-https_strict', action='store_true', help='for -type https, only accept proxies that work with HTTPS proxy scheme (TLS to proxy)')
 parser.add_argument('-mass', type=str, help='Absolute path to the masscan XML file')
 parser.add_argument('-list', action='store_true', help='check proxy from open sources')
 parser.add_argument('-targets', action='store_true', help='check proxy from targets.txt')
@@ -46,6 +50,7 @@ args = parser.parse_args()
 os.system('ulimit -n 80000')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 all_checked_proxies = {}
+ip_port_line_pattern = re.compile(r'^\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})\s*$')
 
 if args.type:
     proxy_types = list(args.type) if isinstance(args.type, list) else [args.type]
@@ -125,80 +130,62 @@ def process_page(page, ip_port_pattern):
 http_pool = PoolManager(maxsize=10)  # Adjust maxsize as needed
 
 def check_proxy(proxy, proxy_type):
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    try:
-        proxy_host, proxy_port = proxy.split(':')
-        url = 'https://httpbin.org/ip'
-        
-        if proxy_type in ['http', 'https']:
-            # Use a ProxyManager for HTTP/HTTPS proxies
-            http = urllib3.ProxyManager(
-                f"{proxy_type}://{proxy_host}:{proxy_port}",
-                timeout=urllib3.Timeout(connect=args.t, read=args.t),
-                retries=False,
-                cert_reqs='CERT_NONE',
-                assert_hostname=False
-            )
-            start_time = time.time()
-            response = http.request('GET', url, preload_content=False)
-            response_time = time.time() - start_time
-            data = json.loads(response.data.decode('utf-8'))
-            response.release_conn()  # Ensure the connection is released
-            
-            if any(origin == sip for origin in data.get('origin').split(', ')):
-                return None
-            else:
-                logging.info(f"Successful proxy: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
-                return f'{proxy_host}:{proxy_port}', response_time, current_time
-        
-        elif proxy_type in ['socks4', 'socks5']:
-            # Use socks for SOCKS proxies
-            socks.set_default_proxy(socks.SOCKS4 if proxy_type == 'socks4' else socks.SOCKS5, proxy_host, int(proxy_port))
-            socket.socket = socks.socksocket
-            headers = {'X-Forwarded-For': proxy_host}
-            r = requests.get(url, timeout=args.t, verify=False, headers=headers)
-            
-            if r.status_code == 200:
-                response_time = r.elapsed.total_seconds()
-                data = r.json()
-                
-                if any(origin == sip for origin in data.get('origin').split(', ')):
-                    return None
-                else:
-                    logging.info(f"Successful proxy: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
-                    return f'{proxy_host}:{proxy_port}', response_time, current_time
-    
-    except (NewConnectionError, SSLError, ProxyError, ConnectTimeoutError, ReadTimeoutError) as e:
-        if isinstance(e, NewConnectionError) and "Too many open files" in str(e):
-            logging.warning("Too many open files error encountered.")
-        return None
-    except Exception as e:
-        logging.debug(f"Unexpected error checking proxy {proxy}: {e}")
-        return None
-    finally:
-        socks.set_default_proxy()
-        socket.socket = socket.socket
-    return None
+    target_url = 'https://httpbin.org/ip'
+    return shared_check_proxy(
+        proxy=proxy,
+        proxy_type=proxy_type,
+        sip=sip,
+        timeout_seconds=args.t,
+        https_strict=args.https_strict,
+        target_url=target_url,
+    )
 
 def get_db_connection():
     return sqlite3.connect(config['database']['path'], timeout=30)
 
-def load_urls_from_file(file_path):
+def load_urls_from_file(file_path) -> List[str]:
     with open(file_path, 'r') as file:
-        return file.read().splitlines()
+        return [line.strip() for line in file.read().splitlines() if line.strip() and not line.strip().startswith('#')]
 
 def add_sources(start_page=1, end_page=200, num_threads=10):
     ip_port_pattern = re.compile(r'(([0-9]{1,3}\.){3}[0-9]{1,3}|port=[0-9]+)')
     all_results = set()
+    total_pages = end_page - start_page + 1
+    logging.info(f"freeproxy.world: fetching pages {start_page}-{end_page} ({total_pages} pages) ...")
+    completed = 0
     with ThreadPoolExecutor(max_workers=num_threads) as executor:
         future_to_page = {executor.submit(process_page, page, ip_port_pattern): page for page in range(start_page, end_page + 1)}
         for future in as_completed(future_to_page):
+            page = future_to_page[future]
             try:
                 results = future.result()
+                before = len(all_results)
                 all_results.update(results)
+                new_added = len(all_results) - before
             except Exception as e:
-                logging.error(f"Error in future for page {future_to_page[future]}: {e}")
+                logging.error(f"Error in future for page {page}: {e}")
+                new_added = 0
+            completed += 1
+            if completed % 10 == 0 or completed == total_pages:
+                logging.info(f"freeproxy.world progress: {completed}/{total_pages} pages, +{new_added} new, unique candidates so far: {len(all_results)}")
     return all_results
+
+
+def _fetch_url_candidates(url: str, timeout: int) -> Set[str]:
+    try:
+        resp = requests.get(url, timeout=timeout)
+        if resp.status_code != 200:
+            return set()
+        candidates = set()
+        for line in resp.text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ip_port_line_pattern.match(line):
+                candidates.add(line)
+        return candidates
+    except Exception:
+        return set()
 
 if __name__ == '__main__':
     data_written = False
@@ -223,18 +210,35 @@ if __name__ == '__main__':
             logging.error(f"Error reading targets.txt: {e}")
     
     if args.list:
-        logging.info('Getting targets...')
+        logging.info('Getting targets from open sources...')
+        # freeproxy.world pages
+        start = time.time()
         ip_ports.update(add_sources())
+        logging.info(f"freeproxy.world collected candidates: {len(ip_ports)} (elapsed {time.time()-start:.1f}s)")
+
+        # urls.txt in parallel
         try:
             urls = load_urls_from_file('urls.txt')
-            for url in urls:
-                try:
-                    response = requests.get(url)
-                    if response.status_code == 200:
-                        new_proxies = set(response.text.splitlines())
-                        ip_ports.update(new_proxies)
-                except Exception as e:
-                    logging.error(f"Error fetching proxies from URL {url}: {e}")
+            logging.info(f"Fetching {len(urls)} sources from urls.txt in parallel...")
+            added_total = 0
+            start_urls = time.time()
+            with ThreadPoolExecutor(max_workers=32) as pool:
+                futures = {pool.submit(_fetch_url_candidates, u, args.t): u for u in urls}
+                completed = 0
+                for future in as_completed(futures):
+                    u = futures[future]
+                    try:
+                        candidates = future.result() or set()
+                    except Exception:
+                        candidates = set()
+                    before = len(ip_ports)
+                    ip_ports.update(candidates)
+                    new_added = len(ip_ports) - before
+                    added_total += new_added
+                    completed += 1
+                    if completed % 5 == 0 or completed == len(urls):
+                        logging.info(f"urls.txt progress: {completed}/{len(urls)} sources processed, +{new_added} last, unique total: {len(ip_ports)}")
+            logging.info(f"urls.txt done: +{added_total} new candidates (elapsed {time.time()-start_urls:.1f}s)")
         except Exception as e:
             logging.error(f"Error loading URLs from urls.txt: {e}")
 
@@ -261,7 +265,7 @@ if __name__ == '__main__':
                 for proxy in proxies:
                     ip_ports.add(proxy[0])
 
-    logging.info(f'Total proxies to check: {len(ip_ports)}')
+    logging.info(f'Total unique candidates to check: {len(ip_ports)}')
     
     for proxy_type in proxy_types:
         logging.info(f'Checking {proxy_type} proxies...')
@@ -276,6 +280,9 @@ if __name__ == '__main__':
 
         with ThreadPoolExecutor(max_workers=args.w) as executor:
             futures = {executor.submit(check_proxy, p, proxy_type): p for p in ip_ports}
+            total = len(futures)
+            done_cnt = 0
+            last_log = time.time()
             for future in as_completed(futures):
                 result = future.result()
                 p = futures[future]
@@ -283,6 +290,11 @@ if __name__ == '__main__':
                     checked_proxies.append(result)
                 else:
                     failed_proxies.append(p)
+                done_cnt += 1
+                now = time.time()
+                if done_cnt % 500 == 0 or now - last_log >= 5 or done_cnt == total:
+                    last_log = now
+                    logging.info(f"Progress {proxy_type}: {done_cnt}/{total} checked, ok={len(checked_proxies)}, fail={len(failed_proxies)}")
 
         if args.clean:
             with closing(get_db_connection()) as conn:

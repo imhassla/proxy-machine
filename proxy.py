@@ -13,6 +13,8 @@ import json
 import socks
 import socket
 import configparser
+import ssl
+from proxy_utils import check_proxy as shared_check_proxy
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from socks import set_default_proxy, SOCKS4, SOCKS5, socksocket
@@ -83,85 +85,16 @@ while True:
 # Create a global connection pool for HTTP/HTTPS proxies
 http_pool = urllib3.PoolManager(maxsize=10)
 
-# Function to check proxies
 def check_proxy(proxy, proxy_type):
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    original_socket = socket.socket
-
-    try:
-        proxy_host, proxy_port = proxy.split(':')
-        url = 'https://httpbin.org/ip'
-        
-        if proxy_type in ['http', 'https']:
-            # Many public lists label proxies as "https" when they are HTTP CONNECT proxies.
-            # True HTTPS proxies also exist (TLS to the proxy). Try both for 'https' type.
-            if proxy_type == 'http':
-                schemes_to_try = ['http']
-            else:
-                schemes_to_try = ['https'] if args.https_strict else ['http', 'https']
-            last_error = None
-            for proxy_scheme in schemes_to_try:
-                try:
-                    proxy_url = f"{proxy_scheme}://{proxy_host}:{proxy_port}"
-                    http = urllib3.ProxyManager(
-                        proxy_url,
-                        timeout=urllib3.Timeout(connect=args.t, read=args.t),
-                        retries=False,
-                        cert_reqs='CERT_NONE',
-                        assert_hostname=False
-                    )
-                    start_time = time.time()
-                    response = http.request('GET', url)
-                    response_time = time.time() - start_time
-                    data = json.loads(response.data.decode('utf-8'))
-                    response.release_conn()
-
-                    sip_ips = [ip.strip() for ip in str(sip).split(',') if ip.strip()]
-                    origin_ips = [ip.strip() for ip in str(data.get('origin', '')).split(',') if ip.strip()]
-                    is_masking = any(ip not in sip_ips for ip in origin_ips)
-                    if not is_masking:
-                        # Not masking; try next scheme if available
-                        continue
-                    logging.info(f"Successful HTTPS target via proxy_scheme={proxy_scheme}: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
-                    return f'{proxy_host}:{proxy_port}', response_time, current_time
-                except (NewConnectionError, SSLError, ProxyError, ConnectTimeoutError, ReadTimeoutError) as e:
-                    last_error = e
-                    continue
-            # If neither scheme worked/masked, treat as invalid
-            return None
-        
-        elif proxy_type in ['socks4', 'socks5']:
-            # Use socks for SOCKS proxies
-            original_socket = socket.socket
-            socks.set_default_proxy(SOCKS4 if proxy_type == 'socks4' else SOCKS5, proxy_host, int(proxy_port))
-            socket.socket = socks.socksocket
-            headers = {'X-Forwarded-For': proxy_host}
-            r = requests.get(url, timeout=args.t, verify=False, headers=headers)
-            
-            if r.status_code == 200:
-                response_time = r.elapsed.total_seconds()
-                data = r.json()
-
-                sip_ips = [ip.strip() for ip in str(sip).split(',') if ip.strip()]
-                origin_ips = [ip.strip() for ip in str(data.get('origin', '')).split(',') if ip.strip()]
-                is_masking = any(ip not in sip_ips for ip in origin_ips)
-                if not is_masking:
-                    return None
-                logging.info(f"Successful proxy: {proxy_host}:{proxy_port} with response time {response_time:.2f}s")
-                return f'{proxy_host}:{proxy_port}', response_time, current_time
-    
-    except (NewConnectionError, SSLError, ProxyError, ConnectTimeoutError, ReadTimeoutError) as e:
-        if isinstance(e, NewConnectionError) and "Too many open files" in str(e):
-            logging.warning("Too many open files error encountered.")
-        return None
-    except Exception as e:
-        logging.debug(f"Unexpected error checking proxy {proxy}: {e}")
-        return None
-    finally:
-        socks.set_default_proxy()
-        socket.socket = original_socket
-    
-    return None
+    target_url = 'https://httpbin.org/ip'
+    return shared_check_proxy(
+        proxy=proxy,
+        proxy_type=proxy_type,
+        sip=sip,
+        timeout_seconds=args.t,
+        https_strict=args.https_strict,
+        target_url=target_url,
+    )
 
 # Function to retrieve proxies from API and additional sources
 def get_proxies():
