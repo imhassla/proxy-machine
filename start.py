@@ -63,7 +63,7 @@ def stop_process(process):
         except Exception as e:
             logging.error(f"Error stopping process {process.pid}: {e}")
 
-def check_api_status(url, retries=3, delay=5):
+def check_api_status(url, retries=50, delay=10):
     for attempt in range(retries):
         try:
             response = requests.get(url)
@@ -76,7 +76,7 @@ def check_api_status(url, retries=3, delay=5):
     logging.error("API failed to start after multiple attempts.")
     return False
 
-def check_proxy_relay(url, retries=3, delay=10):
+def check_proxy_relay(url, retries=50, delay=10):
     for attempt in range(retries):
         try:
             response = requests.get(url, proxies={"http": "http://127.0.0.1:3333"})
