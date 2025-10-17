@@ -1,4 +1,5 @@
+uvicorn.log
+data.db
 __pycache__/
 env/
-*.db
-*.log
+.DS_Store
