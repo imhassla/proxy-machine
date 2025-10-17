@@ -3,3 +3,7 @@ data.db
 __pycache__/
 env/
 .DS_Store
+.DS_Store
+**/.DS_Store
+*.DS_Store
+.dockerignorex
