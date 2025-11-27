@@ -9,7 +9,7 @@
 - start.py - runs proxy delivery and checking, starts local hosted (http://127.0.0.1:8000) API service.
   runs local http proxy server (http://127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local API
 
-The availability of all proxies is checked using a GET request to https://httpbin.org/ip. 
+The availability of all proxies is checked using a GET request to https://httpbin.org/ip.
 
 Only those proxies that do not reveal the current external address of the system where the proxy checker is running are marked as available and alive.
 
@@ -64,9 +64,9 @@ curl --proxy 127.0.0.1:3333 http://httpbin.org/ip
 python3 proxy.py -type http
 ```
 
-The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C). 
+The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C).
 
-While running, it will periodically retrieve, check, and track proxies, updating the data.db 
+While running, it will periodically retrieve, check, and track proxies, updating the data.db
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_machine.png)
 
@@ -94,6 +94,14 @@ check API source list as all types of proxies, print results and store in DB.
 
 ![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_checker.png)
 
+## Configuration
+
+### Supported environment variables
+
+- `CHECKER_WORKERS` - number of worker threads provided to [proxy.py](./proxy.py) and [checker.py](./checker.py) scripts in `-w` argument
+- `CHECKER_TIMEOUT` - timeout in seconds provided to [proxy.py](./proxy.py) and [checker.py](./checker.py) scripts in `-t` argument
+- `API_WORKERS` - number of workers API server is run with
+
 ## Troubleshooting
 
 If you encounter any issues while running this script, try checking the following:
@@ -108,4 +116,4 @@ The accuracy of the proxy availability checks may vary depending on network cond
 
 ## License
 
-This script is distributed under the MIT license. 
+This script is distributed under the MIT license.
