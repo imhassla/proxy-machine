@@ -6,6 +6,7 @@ import sqlite3
 import logging
 import configparser
 import requests
+import string
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -13,6 +14,14 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 # Load configuration
 config = configparser.ConfigParser()
 config.read('config.ini')
+
+default_checker_workers = config["defaults"].get("checker_workers", "25")
+default_checker_timeout = config["defaults"].get("checker_timeout", "4")
+default_api_workers = config["defaults"].get("api_workers", "200")
+
+CHECKER_WORKERS = os.getenv("CHECKER_WORKERS", default_checker_workers)
+CHECKER_TIMEOUT = os.getenv("CHECKER_TIMEOUT", default_checker_timeout)
+API_WORKERS = os.getenv("API_WORKERS", default_api_workers)
 
 # List of proxy types
 proxy_types = ['http', 'https', 'socks4', 'socks5']
@@ -29,15 +38,25 @@ for proxy_type in proxy_types:
     except Exception as e:
         logging.error(f"Error setting up database for {proxy_type}: {e}")
 
+template = string.Template
+commands_map = {}
+for key, value in config["commands"].items():
+    value = template(value).safe_substitute({
+        "CHECKER_WORKERS": CHECKER_WORKERS,
+        "CHECKER_TIMEOUT": CHECKER_TIMEOUT,
+				"API_WORKERS": API_WORKERS
+    })
+    commands_map[key] = value
+
 # List of commands to run different scripts
 commands = [
-    config['commands']['proxy_http'],
-    config['commands']['proxy_https'],
-    config['commands']['proxy_socks4'],
-    config['commands']['proxy_socks5'],
-    config['commands']['checker'],
-    config['commands']['api'],
-    config['commands']['relay']
+    commands_map['proxy_http'],
+    commands_map['proxy_https'],
+    commands_map['proxy_socks4'],
+    commands_map['proxy_socks5'],
+    commands_map['checker'],
+    commands_map['api'],
+    commands_map['relay']
 ]
 
 processes = []
