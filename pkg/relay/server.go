@@ -1,0 +1,333 @@
+package relay
+
+import (
+	"bytes"
+	"context"
+	"crypto/subtle"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"proxymachine/checker"
+	"proxymachine/config"
+	"proxymachine/db"
+)
+
+// relayRefreshInterval is how often the relay re-reads the selector's candidate set from
+// the checker's liveness view, so dead upstreams leave the rotation and freshly validated
+// ones enter it (the snapshot would otherwise freeze after the first fill).
+const relayRefreshInterval = 15 * time.Second
+
+// maxRequestBody caps a relayed request body. The body is buffered in full (to replay
+// across failover candidates), so an unbounded read would be a memory-exhaustion DoS.
+const maxRequestBody = 32 << 20 // 32 MiB
+
+// Server is an HTTP proxy relay that forwards client requests through
+// currently alive upstream HTTP/HTTPS proxies.
+type Server struct {
+	manager    *checker.CheckManager
+	db         *db.DB
+	user, pass string // when user != "", require Proxy-Authorization Basic
+
+	srv      *http.Server
+	stopOnce sync.Once
+	done     chan struct{} // closed by Stop to end the background refresh loop
+
+	selector *selector
+	pool     *transportPool
+	timeout  time.Duration
+}
+
+// New creates a relay server from config: it listens on cfg.RelayAddr (default
+// 127.0.0.1:3333 — NOT an open proxy), uses cfg.Timeout per request, and requires
+// Basic Proxy-Authorization when cfg.ProxyUser is set. The *http.Server is built here
+// (not in Start) so Stop always has a non-nil server — closing the race where a shutdown
+// signal arriving during startup would make Stop a no-op and hang ListenAndServe forever.
+func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB) *Server {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	addr := cfg.RelayAddr
+	if addr == "" {
+		addr = "127.0.0.1:3333"
+	}
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	s := &Server{
+		manager: manager,
+		db:      database,
+		user:    cfg.ProxyUser,
+		pass:    cfg.ProxyPass,
+		timeout: timeout,
+		done:    make(chan struct{}),
+	}
+	// Convert nil concrete pointers to genuinely-nil interfaces: a (*CheckManager)(nil)
+	// or (*db.DB)(nil) stored directly would be a non-nil interface holding a nil value,
+	// so the selector's `!= nil` guards would pass and then panic on a nil-receiver call.
+	var psrc proxySource
+	if manager != nil {
+		psrc = manager
+	}
+	var dsrc dbSource
+	if database != nil {
+		dsrc = database
+	}
+	s.selector = newSelector(psrc, dsrc)
+	s.pool = newTransportPool(timeout)
+
+	// Loud warning if this would be an OPEN proxy: bound to a non-loopback address with
+	// no Proxy-Authorization required. The defaults are loopback, so this only fires when
+	// an operator widens the bind without setting credentials.
+	if cfg.ProxyUser == "" && !isLoopbackAddr(addr) {
+		log.Printf("WARNING: relay bound to %s with no proxyUser — this is an OPEN PROXY reachable from the network; set proxyUser/proxyPass or bind to loopback", addr)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleRequest)
+	s.srv = &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      timeout + 5*time.Second,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 2 * time.Second,
+	}
+	return s
+}
+
+// isLoopbackAddr reports whether a listen address binds only the loopback interface.
+// A bare ":port" / "0.0.0.0:port" / a public host counts as non-loopback (reachable).
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" {
+		return false // ":3333" binds all interfaces
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// Start begins listening for HTTP requests. It blocks until the server stops.
+func (s *Server) Start() error {
+	// Best-effort warm-up, then keep the candidate set in sync with the checker.
+	_ = s.selector.refresh(context.Background())
+	go s.refreshLoop()
+	return s.srv.ListenAndServe()
+}
+
+// refreshLoop periodically re-reads the selector's candidate set until Stop.
+func (s *Server) refreshLoop() {
+	t := time.NewTicker(relayRefreshInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-t.C:
+			_ = s.selector.refresh(context.Background())
+		}
+	}
+}
+
+// Stop gracefully shuts down the server and closes idle connections. It is safe to call
+// more than once (idempotent).
+func (s *Server) Stop(ctx context.Context) error {
+	err := s.srv.Shutdown(ctx)
+	s.stopOnce.Do(func() {
+		close(s.done)
+		s.pool.close()
+	})
+	return err
+}
+
+// authOK reports whether the request carries valid Basic Proxy-Authorization when auth
+// is enabled. Comparison is constant-time. The credential is never forwarded upstream —
+// Proxy-Authorization is in the hop-by-hop strip set.
+func (s *Server) authOK(r *http.Request) bool {
+	if s.user == "" {
+		return true
+	}
+	const prefix = "Basic "
+	h := r.Header.Get("Proxy-Authorization")
+	if !strings.HasPrefix(h, prefix) {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(h, prefix))
+	if err != nil {
+		return false
+	}
+	u, p, ok := strings.Cut(string(raw), ":")
+	if !ok {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(u), []byte(s.user)) == 1 &&
+		subtle.ConstantTimeCompare([]byte(p), []byte(s.pass)) == 1
+}
+
+func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodConnect {
+		http.Error(w, "CONNECT not supported", http.StatusNotImplemented)
+		return
+	}
+	if !s.authOK(r) {
+		w.Header().Set("Proxy-Authenticate", `Basic realm="proxy-machine"`)
+		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
+	defer cancel()
+
+	var candidates []string
+	addr, cands, err := s.selector.next(ctx)
+	if err != nil {
+		if err := s.selector.refresh(ctx); err != nil {
+			http.Error(w, fmt.Sprintf("no proxy available: %v", err), http.StatusServiceUnavailable)
+			return
+		}
+		addr, cands, err = s.selector.next(ctx)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("no proxy available: %v", err), http.StatusServiceUnavailable)
+			return
+		}
+	}
+	if len(cands) > 0 {
+		candidates = cands // already rotated to start at the round-robin pick
+	} else if addr != "" {
+		candidates = []string{addr}
+	}
+
+	// Buffer the original body exactly once (and preserve length) so every candidate
+	// attempt receives the body with correct ContentLength, and replay works across
+	// proxies after errors. Bounded by MaxBytesReader so a client can't OOM the relay
+	// by streaming an unbounded body (the buffer is held for the whole failover loop).
+	var bodyBytes []byte
+	if r.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+		r.Body.Close()
+		if err != nil {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
+
+	var lastErr error
+	for _, proxyAddr := range candidates {
+		client := s.pool.get(proxyAddr)
+
+		outURL := r.URL
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
+		}
+		outReq, err := http.NewRequestWithContext(ctx, r.Method, outURL.String(), bodyReader)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("create request: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if bodyBytes != nil {
+			outReq.ContentLength = int64(len(bodyBytes))
+			outReq.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+			}
+		} else {
+			outReq.ContentLength = r.ContentLength
+		}
+
+		for key, values := range r.Header {
+			for _, v := range values {
+				outReq.Header.Add(key, v)
+			}
+		}
+		stripHopByHop(outReq.Header)
+
+		resp, err := client.Do(outReq)
+		if err != nil {
+			lastErr = err
+			// Fail over to the next upstream ONLY for idempotent/safe methods. A
+			// client.Do error can occur AFTER the request reached the target and the
+			// side effect ran (e.g. the response read failed), so replaying a POST/PATCH
+			// through another proxy could duplicate the mutation.
+			if !idempotentMethod(r.Method) {
+				break
+			}
+			continue
+		}
+
+		stripHopByHop(resp.Header)
+		for key, values := range resp.Header {
+			for _, v := range values {
+				w.Header().Add(key, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			resp.Body.Close()
+			return
+		}
+		resp.Body.Close()
+		return
+	}
+
+	if lastErr != nil {
+		http.Error(w, fmt.Sprintf("proxy request failed: %v", lastErr), http.StatusBadGateway)
+		return
+	}
+	http.Error(w, "proxy request failed: all upstreams failed", http.StatusBadGateway)
+}
+
+// idempotentMethod reports whether an HTTP method is safe to replay across upstreams on
+// a transport error. POST/PATCH are excluded so failover can never duplicate a
+// non-idempotent side effect. PUT/DELETE are included because they are idempotent per
+// RFC 7231 §4.2.2 (repeat delivery yields the same effect) — this is broader than
+// net/http.Transport, which auto-retries only GET/HEAD/OPTIONS/TRACE.
+func idempotentMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace, http.MethodPut, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+var hopByHop = map[string]struct{}{
+	"Connection":          {},
+	"Proxy-Connection":    {}, // non-standard but widely sent by clients; must not be forwarded
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"TE":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+}
+
+func stripHopByHop(h http.Header) {
+	if c := h.Get("Connection"); c != "" {
+		for _, f := range strings.Split(c, ",") {
+			f = strings.TrimSpace(f)
+			if f != "" {
+				h.Del(f)
+			}
+		}
+	}
+	for k := range hopByHop {
+		h.Del(k)
+	}
+	h.Del("Connection")
+}

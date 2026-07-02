@@ -1,119 +1,109 @@
-# Proxy Machine
+# proxy-machine (Go)
 
-- proxy.py - retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies.
+A single-binary Go port of proxy-machine: harvest proxy candidates by port-scanning,
+**validate** them by proxying through each (origin ≠ self-IP), **store** survivors in
+SQLite, and **serve** them via an HTTP API and a rotating HTTP relay. This is the primary
+implementation; the original Python version lives in [`python/`](python) (legacy)
+and is the behavioral spec.
 
-- scan.py - performs port scanning with a SOCKS4 socket using found proxies.
+## Pipeline
 
-- checker.py - checks all types of proxies from scan_results or custom API '-url'
-
-- start.py - runs proxy delivery and checking, starts local hosted (http://127.0.0.1:8000) API service.
-  runs local http proxy server (http://127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local API
-
-The availability of all proxies is checked using a GET request to https://httpbin.org/ip.
-
-Only those proxies that do not reveal the current external address of the system where the proxy checker is running are marked as available and alive.
-
-Every script can be run from the command line with several optional arguments to specify the required ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, and the URL of the API to retrieve proxies from
-
-## Install
-With venv environment (python3-full and python3-pip required):
-
-```bash
-sudo apt update && sudo apt install git python3-full python3-pip -y
-git clone https://github.com/imhassla/proxy-machine.git
-cd proxy-machine
-python3 -m venv env
-source env/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+```
+scan (port scanner) ──► _scan_results ──┐
+                                        ▼
+public proxy lists ───────────►  checker (background loop)
+stored proxies (recheck) ─────►   • validate: GET httpbin.org/ip through each proxy,
+                                    keep only those whose origin (every comma component)
+                                    ≠ our self-IP  (anonymous + working)
+                                  • persist survivors → per-type tables (http/https/socks5)
+                                  • prune proxies that no longer validate
+                                  • consume _scan_results
+                                        │
+                  ┌─────────────────────┴───────────────────────┐
+                  ▼                                              ▼
+        API (:8000, loopback)                  HTTP relay (:3333, loopback)
+        GET /proxy/{type}?time=&minutes=        forwards client requests through a rotating,
+        served from the per-type tables         validated upstream proxy, dialed with its own
+                                                scheme (http/https/socks5); refreshed every 15s
 ```
 
-With docker:
-```bash
-git clone https://github.com/imhassla/proxy-machine.git
-cd proxy-machine
-docker build -t proxy_machine .
-docker run -it --rm -v "$(pwd)":/app -p 8000:8000 -p 3333:3333 proxy_machine
+## Build & run
+
+```sh
+go build -o proxymachine .
+
+# Service (checker loop + API + relay):
+./proxymachine --dbPath data.db
+
+# One-shot port scan → _scan_results (the checker validates them next cycle):
+./proxymachine scan -cidr 192.0.2.0/24 -port 8080,3128 --dbPath data.db
 ```
 
-## Usage
-To start the Machine just run container or:
-```bash
-python3 start.py
-```
-To start proxy checks of all types and run uvicorn server for local Proxy-Machine API service.
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-start.png)
-
-Let's go with web-browser to http://127.0.0.1:8000, which is provided to us by uvicorn to see the API doc:
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-doc.png)
-
-Curl usage of API:
-```bash
-curl 'http://127.0.0.1:8000/proxy/http?time=2&minutes=2&format=text'
-```
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-demo.png)
-
-Curl usage of local proxy relay server:
-```bash
-curl --proxy 127.0.0.1:3333 http://httpbin.org/ip
-```
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/http-proxy-relay.png)
-
-## Other scripts and options
-```bash
-python3 proxy.py -type http
-```
-
-The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C).
-
-While running, it will periodically retrieve, check, and track proxies, updating the data.db
-
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_machine.png)
-
-```bash
-python3 scan.py -range 1.1.1.0/24 1.2.3.0/24 -port 53 80 8080
-```
-runs proxy.py in the background to retrieve SOCKS4 proxies and perform port scans over found proxies for all IP ranges with every selected port
-
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_scan.png)
-
-```bash
-python3 checker.py -list
-```
-or:
-```bash
-docker run -it --rm -v "$(pwd)":/app -p 8000:8000 -p 3333:3333 proxy_machine checker.py -list
-```
-check all HTTP, HTTPS, SOCKS4, and SOCKS5 proxies from open sources, print results, and store proxies in data.db.
-
-
-```bash
-python3 checker.py -ping -url 'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=all&timeout=300'
-```
-check API source list as all types of proxies, print results and store in DB.
-
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_checker.png)
+The scan probes each `ip:port`. If the DB already holds validated **socks4** proxies it
+egresses **through** one (anonymous); otherwise — including every fresh install, since no
+component currently populates the socks4 table — it falls back to a **direct** TCP probe
+so it can bootstrap. IPv6 CIDRs are rejected; expansion is streamed and capped
+(`-maxHosts`, default 1,048,576) so a wide range can't OOM.
 
 ## Configuration
 
-### Supported environment variables
+Flags override an optional `--config` JSON/INI file, which overrides defaults. The INI
+form accepts a `[database] path = …` section key (matching `python/config.ini`).
 
-- `CHECKER_WORKERS` - number of worker threads provided to [proxy.py](./proxy.py) and [checker.py](./checker.py) scripts in `-w` argument
-- `CHECKER_TIMEOUT` - timeout in seconds provided to [proxy.py](./proxy.py) and [checker.py](./checker.py) scripts in `-t` argument
-- `API_WORKERS` - number of workers API server is run with
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--dbPath` | `data.db` | SQLite path |
+| `--workers` | `4` | validation worker pool size |
+| `--timeout` | `30s` | per-request timeout (list/IP fetch and per-proxy check) |
+| `--checkInterval` | `60s` | background re-validation cadence |
+| `--relayAddr` | `127.0.0.1:3333` | relay bind |
+| `--apiAddr` | `127.0.0.1:8000` | API bind |
+| `--proxyUser` / `--proxyPass` | _(off)_ | require Basic `Proxy-Authorization` on the relay |
+| `--maxHosts` | `1048576` | (scan) cap on expanded host IPs |
 
-## Troubleshooting
+## Proxy sources
 
-If you encounter any issues while running this script, try checking the following:
+The checker harvests candidates from re-verified public lists (HTTP/SOCKS5), then validates
+every one before storing it. The Go set is `publicProxyURLs` in
+[`checker/checker.go`](checker/checker.go); the Python set is the tracked
+[`python/urls.txt`](python/urls.txt) (consumed by `checker.py -list`). Both
+parsers normalize each line — bare `ip:port`, `scheme://ip:port`, and trailing columns are
+all accepted, and junk lines are dropped — so adding a new source is just adding its URL.
 
-- Make sure that all dependencies are installed and up-to-date.
-- Check that you have specified valid values for any command-line arguments.
-- If you are using a custom API URL to retrieve proxies, make sure that it is correctly formatted and returns a valid list of proxies.
+## API
 
-## Limitations
+`GET /proxy/{type}` where `type` ∈ `http | https | socks5` (`socks4` is accepted but
+reserved — nothing populates it yet, so it always returns an empty list):
 
-The accuracy of the proxy availability checks may vary depending on network conditions and other factors. Proxies that are reported as available may not always be accessible or reliable.
+- `time` — max response time in **seconds** (float), e.g. `?time=1.5`
+- `minutes` — max age since last check (default `30`; `0` disables)
+- `format` — `json` (array of `{proxy,response_time,last_checked}`, fastest first) or `text`
 
-## License
+An empty match is `200` with an empty body. `GET /` serves HTML docs; `GET /health` → `ok`.
 
-This script is distributed under the MIT license.
+## Security defaults
+
+The relay and API bind to **loopback** by default — a fresh install is **not** an open
+proxy. To expose the relay on a network, set `--relayAddr 0.0.0.0:3333` **and**
+`--proxyUser`/`--proxyPass`; every relay request then needs Basic `Proxy-Authorization`
+(the credential is hop-by-hop-stripped and never forwarded upstream). Binding to a
+non-loopback address **without** `--proxyUser` logs a loud open-proxy warning. The relay
+caps a request body at 32 MiB (returns `413` above it).
+
+## Tests
+
+```sh
+go test -race ./...
+```
+
+## Notes / limitations
+
+- The relay is an HTTP forward proxy (matches `python/http-proxy-relay.py`); it
+  does not implement CONNECT/HTTPS tunneling of client traffic. It *does* dial upstream
+  http/https/socks5 proxies with the correct scheme.
+- socks4 proxies are harvested by the scanner but not validated/served by the Go pipeline
+  (net/http cannot proxy socks4) — a documented follow-up needing a manual SOCKS4 client.
+- Failover replays only idempotent methods (GET/HEAD/OPTIONS/TRACE/PUT/DELETE); POST/
+  PATCH are not retried across upstreams, to avoid duplicate side effects.
+- SQLite is opened with a single connection (`SetMaxOpenConns(1)`) so concurrent
+  checker-writes and API/relay-reads can't race to `SQLITE_BUSY`.

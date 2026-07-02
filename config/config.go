@@ -1,0 +1,253 @@
+// Package config provides application configuration loaded from defaults,
+// JSON/INI files, and command-line flags. Flags override file values,
+// which override defaults.
+package config
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Config holds the application settings.
+type Config struct {
+	Workers int
+	Timeout time.Duration
+	DBPath  string
+
+	// CheckInterval is the cadence of the background re-validation loop (re-check
+	// stored proxies, validate fresh scan results / public lists, prune dead).
+	CheckInterval time.Duration
+
+	// RelayAddr / APIAddr are the listen addresses. Default to LOOPBACK so a fresh
+	// install is not an open proxy / open API exposed to the network.
+	RelayAddr string
+	APIAddr   string
+
+	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
+	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
+	// loopback default bind; a non-loopback RelayAddr should always set credentials).
+	ProxyUser string
+	ProxyPass string
+}
+
+// Load parses command-line flags and optional config file to produce Config.
+// args should typically be os.Args[1:].
+func Load(args []string) (*Config, error) {
+	cfg := &Config{
+		Workers:       4,
+		Timeout:       30 * time.Second,
+		DBPath:        "data.db",
+		CheckInterval: 60 * time.Second,
+		RelayAddr:     "127.0.0.1:3333",
+		APIAddr:       "127.0.0.1:8000",
+	}
+
+	var configPath string
+	var workers int
+	var timeout, checkInterval time.Duration
+	var dbPath, relayAddr, apiAddr, proxyUser, proxyPass string
+
+	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
+	fs.IntVar(&workers, "workers", -1, "Number of workers")
+	fs.DurationVar(&timeout, "timeout", -1, "Timeout duration")
+	fs.DurationVar(&checkInterval, "checkInterval", -1, "Background re-check interval")
+	fs.StringVar(&dbPath, "dbPath", "", "Path to database file")
+	fs.StringVar(&relayAddr, "relayAddr", "", "Relay listen address (default 127.0.0.1:3333)")
+	fs.StringVar(&apiAddr, "apiAddr", "", "API listen address (default 127.0.0.1:8000)")
+	fs.StringVar(&proxyUser, "proxyUser", "", "Relay Basic-auth username (enables auth when set)")
+	fs.StringVar(&proxyPass, "proxyPass", "", "Relay Basic-auth password")
+
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+
+	if configPath != "" {
+		if err := loadFile(configPath, cfg); err != nil {
+			return nil, err
+		}
+	}
+
+	if workers >= 0 {
+		cfg.Workers = workers
+	}
+	if timeout >= 0 {
+		cfg.Timeout = timeout
+	}
+	if checkInterval >= 0 {
+		cfg.CheckInterval = checkInterval
+	}
+	if dbPath != "" {
+		cfg.DBPath = dbPath
+	}
+	if relayAddr != "" {
+		cfg.RelayAddr = relayAddr
+	}
+	if apiAddr != "" {
+		cfg.APIAddr = apiAddr
+	}
+	if proxyUser != "" {
+		cfg.ProxyUser = proxyUser
+	}
+	if proxyPass != "" {
+		cfg.ProxyPass = proxyPass
+	}
+
+	return cfg, nil
+}
+
+func loadFile(path string, cfg *Config) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".json":
+		return loadJSON(data, cfg)
+	case ".ini", ".conf", ".cfg", "":
+		return loadINI(data, cfg)
+	default:
+		return fmt.Errorf("unsupported config file format: %s", ext)
+	}
+}
+
+type fileConfig struct {
+	Workers       *int    `json:"workers"`
+	Timeout       *string `json:"timeout"`
+	DBPath        *string `json:"dbPath"`
+	CheckInterval *string `json:"checkInterval"`
+	RelayAddr     *string `json:"relayAddr"`
+	APIAddr       *string `json:"apiAddr"`
+	ProxyUser     *string `json:"proxyUser"`
+	ProxyPass     *string `json:"proxyPass"`
+}
+
+func loadJSON(data []byte, cfg *Config) error {
+	var fc fileConfig
+	if err := json.Unmarshal(data, &fc); err != nil {
+		return err
+	}
+	return applyFileConfig(fc, cfg)
+}
+
+func loadINI(data []byte, cfg *Config) error {
+	var fc fileConfig
+	section := ""
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		val = strings.TrimSpace(val)
+		val = strings.Trim(val, `"'`)
+
+		// Section-qualified key from the legacy python/config.ini ([database] path = ...).
+		if section == "database" && key == "path" && fc.DBPath == nil {
+			fc.DBPath = &val
+			continue
+		}
+
+		switch key {
+		case "workers":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("invalid workers value %q: %w", val, err)
+			}
+			if fc.Workers == nil {
+				w := v
+				fc.Workers = &w
+			}
+		case "timeout":
+			if fc.Timeout == nil {
+				fc.Timeout = &val
+			}
+		case "dbpath", "db.path":
+			if fc.DBPath == nil {
+				fc.DBPath = &val
+			}
+		case "checkinterval":
+			if fc.CheckInterval == nil {
+				fc.CheckInterval = &val
+			}
+		case "relayaddr":
+			if fc.RelayAddr == nil {
+				fc.RelayAddr = &val
+			}
+		case "apiaddr":
+			if fc.APIAddr == nil {
+				fc.APIAddr = &val
+			}
+		case "proxyuser":
+			if fc.ProxyUser == nil {
+				fc.ProxyUser = &val
+			}
+		case "proxypass":
+			if fc.ProxyPass == nil {
+				fc.ProxyPass = &val
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return applyFileConfig(fc, cfg)
+}
+
+func applyFileConfig(fc fileConfig, cfg *Config) error {
+	if fc.Workers != nil {
+		if *fc.Workers < 0 {
+			return fmt.Errorf("workers must be non-negative")
+		}
+		cfg.Workers = *fc.Workers
+	}
+	if fc.Timeout != nil {
+		d, err := time.ParseDuration(*fc.Timeout)
+		if err != nil {
+			return fmt.Errorf("invalid timeout value %q: %w", *fc.Timeout, err)
+		}
+		cfg.Timeout = d
+	}
+	if fc.DBPath != nil {
+		cfg.DBPath = *fc.DBPath
+	}
+	if fc.CheckInterval != nil {
+		d, err := time.ParseDuration(*fc.CheckInterval)
+		if err != nil {
+			return fmt.Errorf("invalid checkInterval value %q: %w", *fc.CheckInterval, err)
+		}
+		cfg.CheckInterval = d
+	}
+	if fc.RelayAddr != nil {
+		cfg.RelayAddr = *fc.RelayAddr
+	}
+	if fc.APIAddr != nil {
+		cfg.APIAddr = *fc.APIAddr
+	}
+	if fc.ProxyUser != nil {
+		cfg.ProxyUser = *fc.ProxyUser
+	}
+	if fc.ProxyPass != nil {
+		cfg.ProxyPass = *fc.ProxyPass
+	}
+	return nil
+}
