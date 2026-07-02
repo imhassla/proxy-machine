@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"embed"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 
 	"proxymachine/checker"
 	"proxymachine/db"
+	"proxymachine/metrics"
 )
 
 //go:embed all:api_docs
@@ -23,22 +25,25 @@ var docsFS embed.FS
 type Server struct {
 	manager *checker.CheckManager
 	db      *db.DB
+	metrics *metrics.Metrics
 	srv     *http.Server
 }
 
 // New creates a new Server on the given address. The *http.Server is built here (not in
 // Start), so Stop always has a non-nil server even if a shutdown signal arrives during
 // startup — closing the race where Stop would no-op and ListenAndServe would hang forever.
-func New(addr string, manager *checker.CheckManager, database *db.DB) *Server {
+func New(addr string, manager *checker.CheckManager, database *db.DB, m *metrics.Metrics) *Server {
 	if addr == "" {
 		addr = ":8000"
 	}
-	s := &Server{manager: manager, db: database}
+	s := &Server{manager: manager, db: database, metrics: m}
 	mux := http.NewServeMux()
 	mux.Handle("/docs/", http.StripPrefix("/docs/", http.FileServer(http.FS(docsFS))))
 	mux.HandleFunc("/", s.handleDocs)
 	mux.HandleFunc("/proxy/{type}", s.handleProxy)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/stats", s.handleStats)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 	s.srv = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -84,6 +89,86 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+var serveTypes = []string{"http", "https", "socks4", "socks5"}
+
+// proxyCounts returns the number of validated proxies per type (missing/erroring types
+// report 0).
+func (s *Server) proxyCounts() map[string]int {
+	counts := make(map[string]int, len(serveTypes))
+	for _, t := range serveTypes {
+		if s.db != nil {
+			if n, err := s.db.CountByType(t); err == nil {
+				counts[t] = n
+				continue
+			}
+		}
+		counts[t] = 0
+	}
+	return counts
+}
+
+// handleStats serves a JSON snapshot of validated-proxy counts and relay counters.
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	out := struct {
+		Proxies map[string]int   `json:"proxies"`
+		Relay   metrics.Snapshot `json:"relay"`
+	}{
+		Proxies: s.proxyCounts(),
+		Relay:   s.metrics.Snapshot(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// handleMetrics serves Prometheus text-format metrics: per-type proxy gauges and relay
+// counters.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	snap := s.metrics.Snapshot()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+
+	fmt.Fprintln(bw, "# HELP proxymachine_proxies Number of validated proxies stored, by type.")
+	fmt.Fprintln(bw, "# TYPE proxymachine_proxies gauge")
+	for _, t := range serveTypes {
+		n := 0
+		if s.db != nil {
+			if c, err := s.db.CountByType(t); err == nil {
+				n = c
+			}
+		}
+		fmt.Fprintf(bw, "proxymachine_proxies{type=%q} %d\n", t, n)
+	}
+
+	fmt.Fprintln(bw, "# HELP proxymachine_relay_requests_total Relay requests handled, by kind.")
+	fmt.Fprintln(bw, "# TYPE proxymachine_relay_requests_total counter")
+	fmt.Fprintf(bw, "proxymachine_relay_requests_total{kind=%q} %d\n", "http", snap.RelayHTTP)
+	fmt.Fprintf(bw, "proxymachine_relay_requests_total{kind=%q} %d\n", "connect", snap.RelayConnect)
+	fmt.Fprintf(bw, "proxymachine_relay_requests_total{kind=%q} %d\n", "socks5", snap.RelaySocks)
+
+	fmt.Fprintln(bw, "# HELP proxymachine_relay_failures_total Relay requests that failed to reach any upstream.")
+	fmt.Fprintln(bw, "# TYPE proxymachine_relay_failures_total counter")
+	fmt.Fprintf(bw, "proxymachine_relay_failures_total %d\n", snap.RelayFailures)
+
+	fmt.Fprintln(bw, "# HELP proxymachine_relay_upstream_attempts_total Upstream proxy dial attempts.")
+	fmt.Fprintln(bw, "# TYPE proxymachine_relay_upstream_attempts_total counter")
+	fmt.Fprintf(bw, "proxymachine_relay_upstream_attempts_total %d\n", snap.UpstreamAttempts)
+
+	fmt.Fprintln(bw, "# HELP proxymachine_relay_upstream_failures_total Upstream proxy dial failures.")
+	fmt.Fprintln(bw, "# TYPE proxymachine_relay_upstream_failures_total counter")
+	fmt.Fprintf(bw, "proxymachine_relay_upstream_failures_total %d\n", snap.UpstreamFailures)
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {

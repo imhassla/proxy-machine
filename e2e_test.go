@@ -104,7 +104,7 @@ func TestEndToEndPipeline(t *testing.T) {
 	}
 
 	// Stage 2 — db→api: the API serves the validated proxy with metadata.
-	apiSrv := api.New("127.0.0.1:18020", mgr, database)
+	apiSrv := api.New("127.0.0.1:18020", mgr, database, nil)
 	go func() { _ = apiSrv.Start() }()
 	defer stopServer(apiSrv.Stop)
 	waitReady(t, "http://127.0.0.1:18020/health")
@@ -123,7 +123,7 @@ func TestEndToEndPipeline(t *testing.T) {
 	// Stage 3 — relay: a real client request through the relay is forwarded via the
 	// validated upstream proxy to the origin.
 	relayCfg := &config.Config{RelayAddr: "127.0.0.1:18021", Timeout: 5 * time.Second}
-	relaySrv := relay.New(relayCfg, mgr, database)
+	relaySrv := relay.New(relayCfg, mgr, database, nil)
 	go func() { _ = relaySrv.Start() }()
 	defer stopServer(relaySrv.Stop)
 

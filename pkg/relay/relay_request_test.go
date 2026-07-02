@@ -19,7 +19,7 @@ import (
 // hang ListenAndServe forever (the pre-fix race).
 func TestRelayStopRacesStartup(t *testing.T) {
 	// Stop before Start: returns promptly, no panic.
-	s := New(&config.Config{RelayAddr: "127.0.0.1:0"}, nil, nil)
+	s := New(&config.Config{RelayAddr: "127.0.0.1:0"}, nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := s.Stop(ctx); err != nil {
@@ -27,7 +27,7 @@ func TestRelayStopRacesStartup(t *testing.T) {
 	}
 
 	// Stop immediately after launching Start: Start must return within the deadline.
-	s2 := New(&config.Config{RelayAddr: "127.0.0.1:0"}, nil, nil)
+	s2 := New(&config.Config{RelayAddr: "127.0.0.1:0"}, nil, nil, nil)
 	done := make(chan error, 1)
 	go func() { done <- s2.Start() }()
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)

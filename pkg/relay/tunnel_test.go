@@ -8,11 +8,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"proxymachine/config"
+	"proxymachine/pkg/socks"
 )
 
 // --- test fixtures --------------------------------------------------------------------
@@ -84,7 +86,7 @@ func startConnectProxy(t *testing.T) string {
 // DIRECTLY, standing in for an upstream socks5 proxy. Returns its host:port.
 func startSocks5Upstream(t *testing.T) string {
 	t.Helper()
-	srv := NewSocks("127.0.0.1:0", "", "", 5*time.Second, func(ctx context.Context, target string) (net.Conn, error) {
+	srv := NewSocks("127.0.0.1:0", "", "", 5*time.Second, nil, func(ctx context.Context, target string) (net.Conn, error) {
 		return net.Dial("tcp", target)
 	})
 	go func() { _ = srv.Start() }()
@@ -109,7 +111,7 @@ func waitAddr(t *testing.T, s *SocksServer) {
 // upstreams, bypassing the checker/db.
 func relayWithUpstreams(t *testing.T, cache map[string][]string) *Server {
 	t.Helper()
-	s := New(&config.Config{RelayAddr: "127.0.0.1:0", MaxFailover: 5, Timeout: 5 * time.Second}, nil, nil)
+	s := New(&config.Config{RelayAddr: "127.0.0.1:0", MaxFailover: 5, Timeout: 5 * time.Second}, nil, nil, nil)
 	s.selector = newSelector(&fakeManager{cache: cache}, nil)
 	if err := s.selector.refresh(context.Background()); err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -141,6 +143,61 @@ func TestDialUpstreamSocks5(t *testing.T) {
 	}
 	defer conn.Close()
 	assertEcho(t, conn)
+}
+
+func TestDialUpstreamSocks4(t *testing.T) {
+	echo := startEcho(t)
+	socks4Up := startSocks4Upstream(t)
+
+	conn, err := dialUpstream(context.Background(), "socks4://"+socks4Up, echo, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dialUpstream socks4: %v", err)
+	}
+	defer conn.Close()
+	assertEcho(t, conn)
+}
+
+// startSocks4Upstream starts a minimal SOCKS4/4a server that dials the requested target
+// DIRECTLY and splices — standing in for an upstream socks4 proxy. Returns its host:port.
+func startSocks4Upstream(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				br := bufio.NewReader(c)
+				head := make([]byte, 8) // VN,CD,PORT(2),IP(4)
+				if _, err := io.ReadFull(br, head); err != nil {
+					_ = c.Close()
+					return
+				}
+				port := int(head[2])<<8 | int(head[3])
+				_, _ = br.ReadBytes(0x00) // USERID
+				host := net.IP(head[4:8]).String()
+				if head[4] == 0 && head[5] == 0 && head[6] == 0 && head[7] != 0 {
+					hb, _ := br.ReadBytes(0x00)
+					host = string(hb[:len(hb)-1])
+				}
+				up, err := net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+				if err != nil {
+					_, _ = c.Write([]byte{0x00, 0x5b, 0, 0, 0, 0, 0, 0}) // rejected
+					_ = c.Close()
+					return
+				}
+				_, _ = c.Write([]byte{0x00, 0x5a, 0, 0, 0, 0, 0, 0}) // granted
+				pipe(c, up)
+			}(c)
+		}
+	}()
+	return ln.Addr().String()
 }
 
 func assertEcho(t *testing.T, conn net.Conn) {
@@ -235,27 +292,27 @@ func TestRelaySocksListenerEndToEnd(t *testing.T) {
 	proxy := startConnectProxy(t)
 
 	cfg := &config.Config{RelayAddr: "127.0.0.1:0", SocksAddr: "127.0.0.1:0", MaxFailover: 5, Timeout: 5 * time.Second}
-	s := New(cfg, nil, nil)
+	s := New(cfg, nil, nil, nil)
 	// Inject the upstream (New's selector is empty without a manager/db).
 	s.selector = newSelector(&fakeManager{cache: map[string][]string{"http": {proxy}}}, nil)
 	if err := s.selector.refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	socks := s.Socks()
-	if socks == nil {
+	socksSrv := s.Socks()
+	if socksSrv == nil {
 		t.Fatal("Socks() is nil despite SocksAddr set")
 	}
-	go func() { _ = socks.Start() }()
-	t.Cleanup(func() { _ = socks.Stop(context.Background()) })
-	waitAddr(t, socks)
+	go func() { _ = socksSrv.Start() }()
+	t.Cleanup(func() { _ = socksSrv.Stop(context.Background()) })
+	waitAddr(t, socksSrv)
 
 	// Speak SOCKS5 to the listener using our own client, tunneling to the echo target.
-	conn, err := net.Dial("tcp", socks.Addr().String())
+	conn, err := net.Dial("tcp", socksSrv.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if err := socks5Connect(conn, echo); err != nil {
+	if err := socks.Handshake5(conn, echo); err != nil {
 		t.Fatalf("socks5 client handshake: %v", err)
 	}
 	assertEcho(t, conn)
@@ -264,7 +321,7 @@ func TestRelaySocksListenerEndToEnd(t *testing.T) {
 // The SOCKS5 listener enforces username/password auth when configured.
 func TestSocksListenerAuth(t *testing.T) {
 	echo := startEcho(t)
-	srv := NewSocks("127.0.0.1:0", "user", "pass", 5*time.Second, func(ctx context.Context, target string) (net.Conn, error) {
+	srv := NewSocks("127.0.0.1:0", "user", "pass", 5*time.Second, nil, func(ctx context.Context, target string) (net.Conn, error) {
 		return net.Dial("tcp", target)
 	})
 	go func() { _ = srv.Start() }()

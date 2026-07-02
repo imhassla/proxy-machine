@@ -14,6 +14,7 @@ import (
 	"proxymachine/checker"
 	"proxymachine/config"
 	"proxymachine/db"
+	"proxymachine/metrics"
 	"proxymachine/pkg/relay"
 	"proxymachine/pkg/scanner"
 )
@@ -51,8 +52,9 @@ func runService(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	server := api.New(cfg.APIAddr, manager, database)
-	relayServer := relay.New(cfg, manager, database)
+	met := metrics.New()
+	server := api.New(cfg.APIAddr, manager, database, met)
+	relayServer := relay.New(cfg, manager, database, met)
 
 	var checkerErr error
 	checkerDone := make(chan struct{})

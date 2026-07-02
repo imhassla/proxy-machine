@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"proxymachine/metrics"
 )
 
 // SocksServer is a client-facing SOCKS5 proxy: clients point their socks5:// at it and it
@@ -23,6 +25,7 @@ type SocksServer struct {
 	user, pass string
 	timeout    time.Duration
 	dial       func(ctx context.Context, target string) (net.Conn, error)
+	metrics    *metrics.Metrics
 
 	mu     sync.Mutex
 	ln     net.Listener
@@ -32,7 +35,7 @@ type SocksServer struct {
 
 // NewSocks builds a SOCKS5 server. dial opens a tunnel to a "host:port" target through an
 // upstream (typically relay.Server.dialTunnel).
-func NewSocks(addr, user, pass string, timeout time.Duration, dial func(ctx context.Context, target string) (net.Conn, error)) *SocksServer {
+func NewSocks(addr, user, pass string, timeout time.Duration, m *metrics.Metrics, dial func(ctx context.Context, target string) (net.Conn, error)) *SocksServer {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
@@ -42,6 +45,7 @@ func NewSocks(addr, user, pass string, timeout time.Duration, dial func(ctx cont
 		pass:    pass,
 		timeout: timeout,
 		dial:    dial,
+		metrics: m,
 		conns:   make(map[net.Conn]struct{}),
 	}
 }
@@ -132,6 +136,7 @@ func (s *SocksServer) handle(conn net.Conn) {
 	if err != nil {
 		return
 	}
+	s.metrics.IncRelaySocks()
 
 	// Tunnel phase: no artificial deadline (connections can be long-lived).
 	_ = conn.SetDeadline(time.Time{})
@@ -139,6 +144,7 @@ func (s *SocksServer) handle(conn net.Conn) {
 	upstream, derr := s.dial(ctx, target)
 	cancel()
 	if derr != nil {
+		s.metrics.IncRelayFailure()
 		_ = writeReply(conn, repHostUnreachable)
 		return
 	}

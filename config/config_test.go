@@ -96,7 +96,7 @@ func TestLoad_INI_DatabaseSection(t *testing.T) {
 	dir := t.TempDir()
 	iniFile := filepath.Join(dir, "config.ini")
 	// A NON-default path so this actually asserts the [database] path key is parsed
-	// (matching python/config.ini); a default would pass even if parsing did nothing.
+	// (a [database] path = ... section); a default would pass even if parsing did nothing.
 	content := `[database]
 path = "custom-proxies.db"
 workers = 5

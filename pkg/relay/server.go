@@ -17,6 +17,7 @@ import (
 	"proxymachine/checker"
 	"proxymachine/config"
 	"proxymachine/db"
+	"proxymachine/metrics"
 )
 
 // relayRefreshInterval is how often the relay re-reads the selector's candidate set from
@@ -27,6 +28,11 @@ const relayRefreshInterval = 15 * time.Second
 // maxRequestBody caps a relayed request body. The body is buffered in full (to replay
 // across failover candidates), so an unbounded read would be a memory-exhaustion DoS.
 const maxRequestBody = 32 << 20 // 32 MiB
+
+// perAttemptDial caps a SINGLE upstream dial+handshake in a tunnel, so a dead proxy that
+// hangs (rather than refusing) can't eat the whole request budget before failover reaches
+// a live one. maxFailover bounds the COUNT of attempts; this bounds each one's TIME.
+const perAttemptDial = 8 * time.Second
 
 // Server is an HTTP proxy relay that forwards client requests through
 // currently alive upstream HTTP/HTTPS proxies.
@@ -44,6 +50,7 @@ type Server struct {
 	timeout     time.Duration
 	maxAttempts int // upstream proxies tried per request before giving up
 	socks       *SocksServer
+	metrics     *metrics.Metrics
 }
 
 // New creates a relay server from config: it listens on cfg.RelayAddr (default
@@ -51,7 +58,7 @@ type Server struct {
 // Basic Proxy-Authorization when cfg.ProxyUser is set. The *http.Server is built here
 // (not in Start) so Stop always has a non-nil server — closing the race where a shutdown
 // signal arriving during startup would make Stop a no-op and hang ListenAndServe forever.
-func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB) *Server {
+func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB, m *metrics.Metrics) *Server {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -74,6 +81,7 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB) *Se
 		pass:        cfg.ProxyPass,
 		timeout:     timeout,
 		maxAttempts: maxAttempts,
+		metrics:     m,
 		done:        make(chan struct{}),
 	}
 	// Convert nil concrete pointers to genuinely-nil interfaces: a (*CheckManager)(nil)
@@ -112,7 +120,7 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB) *Se
 	// Optional client-facing SOCKS5 listener, tunneling through the same rotating,
 	// health-ranked upstreams as the HTTP relay. Empty SocksAddr disables it.
 	if cfg.SocksAddr != "" {
-		s.socks = NewSocks(cfg.SocksAddr, cfg.ProxyUser, cfg.ProxyPass, timeout, s.dialTunnel)
+		s.socks = NewSocks(cfg.SocksAddr, cfg.ProxyUser, cfg.ProxyPass, timeout, m, s.dialTunnel)
 	}
 	return s
 }
@@ -210,6 +218,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.metrics.IncRelayHTTP()
 	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
 
@@ -217,11 +226,13 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	addr, cands, err := s.selector.next(ctx)
 	if err != nil {
 		if err := s.selector.refresh(ctx); err != nil {
+			s.metrics.IncRelayFailure()
 			http.Error(w, fmt.Sprintf("no proxy available: %v", err), http.StatusServiceUnavailable)
 			return
 		}
 		addr, cands, err = s.selector.next(ctx)
 		if err != nil {
+			s.metrics.IncRelayFailure()
 			http.Error(w, fmt.Sprintf("no proxy available: %v", err), http.StatusServiceUnavailable)
 			return
 		}
@@ -293,6 +304,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		// Feed the outcome to the health tracker so future selections prefer this upstream
 		// (on success, by latency) or back off from it (circuit breaker on repeated fails).
 		s.selector.report(proxyAddr, err == nil, time.Since(start))
+		s.metrics.AddUpstream(err == nil)
 		if err != nil {
 			lastErr = err
 			// Fail over to the next upstream ONLY for idempotent/safe methods. A
@@ -321,6 +333,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.metrics.IncRelayFailure()
 	if lastErr != nil {
 		http.Error(w, fmt.Sprintf("proxy request failed: %v", lastErr), http.StatusBadGateway)
 		return
@@ -332,11 +345,13 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 // rotating upstream, replies 200, and splices the hijacked client conn to it. This lets a
 // browser/curl send HTTPS (or any TCP) through the relay, tunneled over the upstream proxy.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	s.metrics.IncRelayConnect()
 	target := r.Host
 	if target == "" {
 		target = r.URL.Host
 	}
 	if _, _, err := net.SplitHostPort(target); err != nil {
+		s.metrics.IncRelayFailure()
 		http.Error(w, "invalid CONNECT target", http.StatusBadRequest)
 		return
 	}
@@ -347,6 +362,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	upstream, err := s.dialTunnel(dctx, target)
 	cancel()
 	if err != nil {
+		s.metrics.IncRelayFailure()
 		http.Error(w, fmt.Sprintf("connect failed: %v", err), http.StatusBadGateway)
 		return
 	}
@@ -400,6 +416,10 @@ func (s *Server) dialTunnel(ctx context.Context, target string) (net.Conn, error
 	if maxAttempts <= 0 {
 		maxAttempts = len(cands)
 	}
+	attemptTimeout := s.timeout
+	if attemptTimeout <= 0 || attemptTimeout > perAttemptDial {
+		attemptTimeout = perAttemptDial
+	}
 	var lastErr error
 	attempts := 0
 	for _, cand := range cands {
@@ -408,8 +428,9 @@ func (s *Server) dialTunnel(ctx context.Context, target string) (net.Conn, error
 		}
 		attempts++
 		start := time.Now()
-		conn, derr := dialUpstream(ctx, cand, target, s.timeout)
+		conn, derr := dialUpstream(ctx, cand, target, attemptTimeout)
 		s.selector.report(cand, derr == nil, time.Since(start))
+		s.metrics.AddUpstream(derr == nil)
 		if derr == nil {
 			return conn, nil
 		}

@@ -9,12 +9,12 @@ import (
 
 var ErrNoProxyAvailable = errors.New("no alive proxy available")
 
-// relayProxyTypes are the upstream proxy types the relay can dial (net/http.Transport
-// supports http/https/socks5 proxy URLs). Must track checker.testableTypes — these are
-// exactly the types the checker validates and stores. Candidates are carried as
-// "type://addr" so the transport dials each with the correct scheme (an https proxy gets
-// a TLS dial, a socks5 proxy gets SOCKS) instead of mis-dialing everything as plaintext.
-var relayProxyTypes = []string{"http", "https", "socks5"}
+// relayProxyTypes are the upstream proxy types the relay can dial. Must track
+// checker.testableTypes — these are exactly the types the checker validates and stores.
+// Candidates are carried as "type://addr" so dialUpstream dials each with the correct
+// scheme (https → TLS hop, socks4/socks5 → SOCKS handshake) instead of mis-dialing
+// everything as plaintext http.
+var relayProxyTypes = []string{"http", "https", "socks5", "socks4"}
 
 type proxySource interface {
 	Cache() map[string][]string

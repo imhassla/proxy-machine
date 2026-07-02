@@ -240,11 +240,28 @@ func TestGetProxyTypeOfConfiguredSources(t *testing.T) {
 			t.Errorf("getProxyType(%q) = %q, want socks5", u, got)
 		}
 	}
-	// The configured defaults must not include a socks4-typed URL (the checker skips
-	// socks4, so a socks4 source would be fetched then discarded — pure waste).
+	wantSOCKS4 := []string{
+		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
+		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
+		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt",
+	}
+	for _, u := range wantSOCKS4 {
+		if got := getProxyType(u); got != "socks4" {
+			t.Errorf("getProxyType(%q) = %q, want socks4", u, got)
+		}
+	}
+	// Every configured type must be one the checker actually validates (testableTypes),
+	// so no source is fetched then discarded.
 	for _, u := range publicProxyURLs {
-		if getProxyType(u) == "socks4" {
-			t.Errorf("publicProxyURLs contains a socks4-typed source (wasted fetch): %q", u)
+		typ := getProxyType(u)
+		found := false
+		for _, tt := range testableTypes {
+			if tt == typ {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("publicProxyURLs source %q types as %q, not in testableTypes", u, typ)
 		}
 	}
 }

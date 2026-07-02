@@ -38,7 +38,7 @@ func TestServer_ProxyFiltering(t *testing.T) {
 		t.Fatalf("store proxy: %v", err)
 	}
 
-	server := New("127.0.0.1:18000", nil, database)
+	server := New("127.0.0.1:18000", nil, database, nil)
 	go func() { _ = server.Start() }()
 
 	base := "http://127.0.0.1:18000"
@@ -118,7 +118,7 @@ func TestServer_ProxyFiltering(t *testing.T) {
 }
 
 func TestServer_DocsRoot(t *testing.T) {
-	server := New("127.0.0.1:18001", nil, nil)
+	server := New("127.0.0.1:18001", nil, nil, nil)
 
 	go func() {
 		_ = server.Start()

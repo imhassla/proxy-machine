@@ -183,7 +183,7 @@ func loadINI(data []byte, cfg *Config) error {
 		val = strings.TrimSpace(val)
 		val = strings.Trim(val, `"'`)
 
-		// Section-qualified key from the legacy python/config.ini ([database] path = ...).
+		// Section-qualified key: an INI [database] path = ... section.
 		if section == "database" && key == "path" && fc.DBPath == nil {
 			fc.DBPath = &val
 			continue

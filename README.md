@@ -1,10 +1,9 @@
 # proxy-machine (Go)
 
-A single-binary Go port of proxy-machine: harvest proxy candidates by port-scanning,
-**validate** them by proxying through each (origin ≠ self-IP), **store** survivors in
-SQLite, and **serve** them via an HTTP API, a rotating HTTP/HTTPS relay (CONNECT
-tunneling), and a client-facing SOCKS5 listener. This is the primary implementation; the
-original Python version lives in [`python/`](python) (legacy) and is the behavioral spec.
+A single-binary proxy machine: harvest proxy candidates by port-scanning, **validate**
+them by proxying through each (origin ≠ self-IP), **store** survivors in SQLite, and
+**serve** them via an HTTP API, a rotating HTTP/HTTPS relay (CONNECT tunneling), and a
+client-facing SOCKS5 listener.
 
 ## Pipeline
 
@@ -15,7 +14,7 @@ public proxy lists ───────────►  checker (background loo
 stored proxies (recheck) ─────►   • validate: GET httpbin.org/ip through each proxy,
                                     keep only those whose origin (every comma component)
                                     ≠ our self-IP  (anonymous + working)
-                                  • persist survivors → per-type tables (http/https/socks5)
+                                  • persist survivors → per-type tables (http/https/socks4/socks5)
                                   • prune proxies that no longer validate
                                   • consume _scan_results
                                         │
@@ -26,7 +25,7 @@ stored proxies (recheck) ─────►   • validate: GET httpbin.org/ip t
   ?time=&minutes=      HTTPS (CONNECT) through a      tunnels through the same
   from per-type        rotating, health-ranked        rotating upstreams. All
   tables               validated upstream (dialed     three loopback by default.
-                       http/https/socks5); bounded
+                       http/https/socks4/socks5); bounded
                        failover + circuit breaker.
 ```
 
@@ -56,7 +55,7 @@ so it can bootstrap. IPv6 CIDRs are rejected; expansion is streamed and capped
 ## Configuration
 
 Flags override an optional `--config` JSON/INI file, which overrides defaults. The INI
-form accepts a `[database] path = …` section key (matching `python/config.ini`).
+form accepts a `[database] path = …` section key.
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -73,23 +72,25 @@ form accepts a `[database] path = …` section key (matching `python/config.ini`
 
 ## Proxy sources
 
-The checker harvests candidates from re-verified public lists (HTTP/SOCKS5), then validates
-every one before storing it. The Go set is `publicProxyURLs` in
-[`checker/checker.go`](checker/checker.go); the Python set is the tracked
-[`python/urls.txt`](python/urls.txt) (consumed by `checker.py -list`). Both
-parsers normalize each line — bare `ip:port`, `scheme://ip:port`, and trailing columns are
-all accepted, and junk lines are dropped — so adding a new source is just adding its URL.
+The checker harvests candidates from re-verified public lists (HTTP/SOCKS4/SOCKS5), then
+validates every one before storing it. The source set is `publicProxyURLs` in
+[`checker/checker.go`](checker/checker.go). The parser normalizes each line — bare
+`ip:port`, `scheme://ip:port`, and trailing columns are all accepted, and junk lines are
+dropped — so adding a new source is just adding its URL.
 
 ## API
 
-`GET /proxy/{type}` where `type` ∈ `http | https | socks5` (`socks4` is accepted but
-reserved — nothing populates it yet, so it always returns an empty list):
+`GET /proxy/{type}` where `type` ∈ `http | https | socks4 | socks5`:
 
 - `time` — max response time in **seconds** (float), e.g. `?time=1.5`
 - `minutes` — max age since last check (default `30`; `0` disables)
 - `format` — `json` (array of `{proxy,response_time,last_checked}`, fastest first) or `text`
 
 An empty match is `200` with an empty body. `GET /` serves HTML docs; `GET /health` → `ok`.
+
+Observability: `GET /stats` returns JSON `{proxies:{<type>:count}, relay:{…counters}}`;
+`GET /metrics` returns the same in Prometheus text format (`proxymachine_proxies`,
+`proxymachine_relay_requests_total`, `…_failures_total`, `…_upstream_attempts_total`).
 
 ## Security defaults
 
@@ -110,17 +111,17 @@ go test -race ./...
 
 ## Notes / limitations
 
-- The relay forwards plaintext HTTP (superset of `python/http-proxy-relay.py`) **and**
-  tunnels HTTPS/any-TCP via `CONNECT`. A client-facing **SOCKS5** listener (CONNECT only;
-  no BIND/UDP) tunnels through the same upstreams. Both dial upstream http/https/socks5
+- The relay forwards plaintext HTTP **and** tunnels HTTPS/any-TCP via `CONNECT`. A
+  client-facing **SOCKS5** listener (CONNECT only;
+  no BIND/UDP) tunnels through the same upstreams. Both dial upstream http/https/socks4/socks5
   proxies with the correct scheme; an https upstream's TLS hop is not cert-verified (free
   proxies rarely present valid certs) — the client's end-to-end TLS inside the tunnel is
   unaffected and still authenticates the real target.
 - Upstream selection is **health-ranked**: alive/unknown proxies rotate (IP diversity);
   proven-slow ones are demoted and a proxy with a run of failures trips a **circuit
   breaker** (skipped for a cooldown). Each request tries at most `--maxFailover` upstreams.
-- socks4 proxies are harvested by the scanner but not validated/served by the Go pipeline
-  (net/http cannot proxy socks4) — a documented follow-up needing a manual SOCKS4 client.
+- socks4/4a proxies are validated (dialed through with the `pkg/socks` client, since
+  net/http can't proxy socks4) and served/egressed like the other types.
 - Failover replays only idempotent methods (GET/HEAD/OPTIONS/TRACE/PUT/DELETE); POST/
   PATCH are not retried across upstreams, to avoid duplicate side effects.
 - SQLite is opened with a single connection (`SetMaxOpenConns(1)`) so concurrent

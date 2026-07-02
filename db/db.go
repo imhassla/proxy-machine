@@ -124,6 +124,19 @@ func (d *DB) GetProxiesByType(proxyType string) ([]string, error) {
 	return proxies, nil
 }
 
+// CountByType returns the number of stored proxies of the given type (cheap COUNT(*),
+// used by /stats and /metrics without materializing every row).
+func (d *DB) CountByType(proxyType string) (int, error) {
+	if err := validateProxyType(proxyType); err != nil {
+		return 0, err
+	}
+	var n int
+	if err := d.conn.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", proxyType)).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count %s: %w", proxyType, err)
+	}
+	return n, nil
+}
+
 // ProxyRow is a stored proxy with its validation metadata. JSON tags match the
 // reference API shape (proxy / response_time / last_checked).
 type ProxyRow struct {

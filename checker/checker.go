@@ -18,6 +18,7 @@ import (
 
 	"proxymachine/config"
 	"proxymachine/db"
+	"proxymachine/pkg/socks"
 )
 
 // maxListBytes caps how much of a public proxy-list response we read, so a single
@@ -28,10 +29,9 @@ var (
 	publicIPURL  = "https://httpbin.org/ip"
 	proxyTestURL = "https://httpbin.org/ip"
 	// publicProxyURLs are re-verified public lists (live + substantial + maintained as of
-	// 2026-06). Each source's TYPE is inferred from its URL by getProxyType, so only
-	// http- and socks5-typed lists are included — the checker validates those (socks4 is
-	// not net/http-proxyable; see testableTypes). proxifly serves "scheme://ip:port",
-	// which normalizeProxyLine strips. Keep this list in sync with python/urls.txt.
+	// 2026-06). Each source's TYPE is inferred from its URL by getProxyType. The checker
+	// validates http/socks5/socks4 (see testableTypes). proxifly serves "scheme://ip:port",
+	// which normalizeProxyLine strips.
 	publicProxyURLs = []string{
 		// http (bare ip:port)
 		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
@@ -44,14 +44,17 @@ var (
 		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
 		"https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
 		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt",
+		// socks4
+		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
+		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
+		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt",
 	}
 )
 
-// testableTypes are the proxy types the Go relay can actually use AND that net/http
-// can validate through (http.Transport.Proxy supports http/https/socks5 URL schemes;
-// socks4 is not supported by net/http, so socks4-only proxies are not validated here —
-// a documented follow-up needing a manual SOCKS4 client; the relay can't use them either).
-var testableTypes = []string{"http", "https", "socks5"}
+// testableTypes are the proxy types the checker validates and the relay can egress
+// through. http/https/socks5 are proxied via http.Transport.Proxy; socks4 (which net/http
+// cannot proxy) is validated by dialing the test target THROUGH it with the socks package.
+var testableTypes = []string{"http", "https", "socks5", "socks4"}
 
 type proxyJob struct {
 	addr    string
@@ -194,11 +197,8 @@ func (cm *CheckManager) gatherCandidates(ctx context.Context) (jobs []proxyJob, 
 		jobs = append(jobs, proxyJob{addr: addr, typ: typ, recheck: recheck})
 	}
 
-	// Public lists: clarketm/TheSpeedX, typed by URL. socks4 is not validatable here.
+	// Public lists: typed by URL (http/socks5/socks4). All are validatable now.
 	for typ, list := range cm.fetchPublicProxies(ctx) {
-		if typ == "socks4" {
-			continue
-		}
 		for _, p := range list {
 			add(p, typ, false)
 		}
@@ -274,15 +274,27 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 	if sip == "" {
 		return 0, false
 	}
-	proxyURL, err := url.Parse(job.typ + "://" + job.addr)
-	if err != nil {
-		return 0, false
-	}
 	timeout := cm.cfg.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	var transport *http.Transport
+	if job.typ == "socks4" {
+		// net/http can't proxy socks4, so dial the test target THROUGH the socks4 proxy and
+		// let the transport run TLS/HTTP over that tunnel (socks4a resolves the hostname).
+		addr := job.addr
+		transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, target string) (net.Conn, error) {
+				return socks.Dial4(ctx, addr, target)
+			},
+		}
+	} else {
+		proxyURL, err := url.Parse(job.typ + "://" + job.addr)
+		if err != nil {
+			return 0, false
+		}
+		transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: timeout}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cm.TestURL, nil)
@@ -308,7 +320,7 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 	// httpbin returns the X-Forwarded-For CHAIN as a comma-joined origin
 	// ("<self>, <proxy>") for a transparent proxy that leaks the client IP. Comparing
 	// the whole string would never equal sip, so such a leaky proxy would pass as
-	// anonymous — reject if ANY component is our own IP. (Matches python/checker.py.)
+	// anonymous — reject if ANY component is our own IP.
 	if result.Origin == "" {
 		return 0, false
 	}
