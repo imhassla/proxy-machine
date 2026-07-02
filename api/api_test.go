@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"proxymachine/db"
+	"proxymachine/metrics"
 )
 
 func TestServer_ProxyFiltering(t *testing.T) {
@@ -168,5 +170,55 @@ func TestServer_DocsRoot(t *testing.T) {
 	defer cancel()
 	if err := server.Stop(ctx); err != nil {
 		t.Fatalf("stop server: %v", err)
+	}
+}
+
+func TestReadyAndStats(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if err := database.Init(); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	m := metrics.New()
+	server := New("127.0.0.1:0", nil, database, m)
+
+	// Empty DB → not ready (503).
+	rec := httptest.NewRecorder()
+	server.handleReady(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready (empty) = %d, want 503", rec.Code)
+	}
+
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	if err := database.StoreProxy("socks4", "1.2.3.4:1080", 0.2, now); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	// A validated upstream exists → ready (200).
+	rec = httptest.NewRecorder()
+	server.handleReady(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ready (with proxy) = %d, want 200", rec.Code)
+	}
+
+	// /stats reflects the proxy count and a relay counter.
+	m.IncRelayConnect()
+	rec = httptest.NewRecorder()
+	server.handleStats(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
+	var out struct {
+		Proxies map[string]int   `json:"proxies"`
+		Relay   metrics.Snapshot `json:"relay"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if out.Proxies["socks4"] != 1 {
+		t.Fatalf("stats socks4 count = %d, want 1", out.Proxies["socks4"])
+	}
+	if out.Relay.RelayConnect != 1 {
+		t.Fatalf("stats relay connect = %d, want 1", out.Relay.RelayConnect)
 	}
 }

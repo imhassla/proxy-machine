@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -282,6 +283,39 @@ func TestRelayConnectNoUpstream(t *testing.T) {
 	status, _ := br.ReadString('\n')
 	if !strings.Contains(status, "502") {
 		t.Fatalf("no-upstream CONNECT status = %q, want 502", strings.TrimSpace(status))
+	}
+}
+
+// Real HTTPS end-to-end THROUGH a socks4 upstream: client → relay CONNECT → socks4 tunnel
+// → TLS handshake with the origin inside the tunnel. Exercises dialUpstream(socks4) + the
+// CONNECT path + genuine TLS (not a plaintext echo).
+func TestRelayHTTPSThroughSocks4(t *testing.T) {
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "HTTPS_OK")
+	}))
+	defer origin.Close()
+
+	socks4Up := startSocks4Upstream(t)
+	s := relayWithUpstreams(t, map[string][]string{"socks4": {socks4Up}})
+	relayTS := httptest.NewServer(s.srv.Handler)
+	defer relayTS.Close()
+
+	proxyURL, _ := url.Parse(relayTS.URL)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: origin.Client().Transport.(*http.Transport).TLSClientConfig, // trust origin cert
+		},
+	}
+	resp, err := client.Get(origin.URL)
+	if err != nil {
+		t.Fatalf("HTTPS through socks4: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "HTTPS_OK" {
+		t.Fatalf("body = %q, want HTTPS_OK", body)
 	}
 }
 

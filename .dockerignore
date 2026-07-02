@@ -1,0 +1,9 @@
+.git
+.github
+*.db
+data.db
+scratchpad
+**/.DS_Store
+Dockerfile
+.dockerignore
+README.md

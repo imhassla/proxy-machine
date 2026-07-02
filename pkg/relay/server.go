@@ -45,12 +45,14 @@ type Server struct {
 	stopOnce sync.Once
 	done     chan struct{} // closed by Stop to end the background refresh loop
 
-	selector    *selector
-	pool        *transportPool
-	timeout     time.Duration
-	maxAttempts int // upstream proxies tried per request before giving up
-	socks       *SocksServer
-	metrics     *metrics.Metrics
+	selector     *selector
+	pool         *transportPool
+	timeout      time.Duration
+	maxAttempts  int // upstream proxies tried per request before giving up
+	socks        *SocksServer
+	metrics      *metrics.Metrics
+	stickyHeader string
+	sticky       *stickyStore
 }
 
 // New creates a relay server from config: it listens on cfg.RelayAddr (default
@@ -83,6 +85,10 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB, m *
 		maxAttempts: maxAttempts,
 		metrics:     m,
 		done:        make(chan struct{}),
+	}
+	if cfg.StickyHeader != "" {
+		s.stickyHeader = cfg.StickyHeader
+		s.sticky = newStickyStore(cfg.StickyTTL)
 	}
 	// Convert nil concrete pointers to genuinely-nil interfaces: a (*CheckManager)(nil)
 	// or (*db.DB)(nil) stored directly would be a non-nil interface holding a nil value,
@@ -120,7 +126,7 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB, m *
 	// Optional client-facing SOCKS5 listener, tunneling through the same rotating,
 	// health-ranked upstreams as the HTTP relay. Empty SocksAddr disables it.
 	if cfg.SocksAddr != "" {
-		s.socks = NewSocks(cfg.SocksAddr, cfg.ProxyUser, cfg.ProxyPass, timeout, m, s.dialTunnel)
+		s.socks = NewSocks(cfg.SocksAddr, cfg.ProxyUser, cfg.ProxyPass, timeout, m, s.socksDial)
 	}
 	return s
 }
@@ -203,6 +209,15 @@ func (s *Server) authOK(r *http.Request) bool {
 		subtle.ConstantTimeCompare([]byte(p), []byte(s.pass)) == 1
 }
 
+// stickyKeyFor returns the session-affinity key for a request (the configured header's
+// value), or "" when stickiness is disabled or the header is absent.
+func (s *Server) stickyKeyFor(r *http.Request) string {
+	if s.sticky == nil || s.stickyHeader == "" {
+		return ""
+	}
+	return r.Header.Get(s.stickyHeader)
+}
+
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if !s.authOK(r) {
 		w.Header().Set("Proxy-Authenticate", `Basic realm="proxy-machine"`)
@@ -241,6 +256,15 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		candidates = cands // already rotated to start at the round-robin pick
 	} else if addr != "" {
 		candidates = []string{addr}
+	}
+
+	// Session affinity: if this request's session is pinned to an upstream, try it first
+	// (failover to the rest still applies if it's dead).
+	stickyKey := s.stickyKeyFor(r)
+	if stickyKey != "" {
+		if pinned := s.sticky.get(stickyKey); pinned != "" {
+			candidates = moveToFront(candidates, pinned)
+		}
 	}
 
 	// Buffer the original body exactly once (and preserve length) so every candidate
@@ -317,6 +341,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Reached an upstream successfully — pin this session to it for future requests.
+		if stickyKey != "" {
+			s.sticky.set(stickyKey, proxyAddr)
+		}
+
 		stripHopByHop(resp.Header)
 		for key, values := range resp.Header {
 			for _, v := range values {
@@ -358,13 +387,21 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Dial the upstream BEFORE hijacking, so a dial failure is a clean HTTP error response
 	// rather than a half-open hijacked connection.
+	stickyKey := s.stickyKeyFor(r)
+	pinned := ""
+	if stickyKey != "" {
+		pinned = s.sticky.get(stickyKey)
+	}
 	dctx, cancel := context.WithTimeout(r.Context(), s.timeout)
-	upstream, err := s.dialTunnel(dctx, target)
+	upstream, used, err := s.dialTunnel(dctx, target, pinned)
 	cancel()
 	if err != nil {
 		s.metrics.IncRelayFailure()
 		http.Error(w, fmt.Sprintf("connect failed: %v", err), http.StatusBadGateway)
 		return
+	}
+	if stickyKey != "" {
+		s.sticky.set(stickyKey, used)
 	}
 
 	hij, ok := w.(http.Hijacker)
@@ -399,18 +436,29 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	pipe(&prefixConn{Conn: clientConn, r: clientReader}, upstream)
 }
 
+// socksDial adapts dialTunnel to the SOCKS listener's dial signature (no session affinity:
+// the SOCKS protocol carries no per-request header to key a sticky session on).
+func (s *Server) socksDial(ctx context.Context, target string) (net.Conn, error) {
+	conn, _, err := s.dialTunnel(ctx, target, "")
+	return conn, err
+}
+
 // dialTunnel opens a tunnel to target through the best available upstreams, trying at most
-// maxAttempts and recording each outcome in the health tracker. Shared by the CONNECT
-// handler and the SOCKS5 listener.
-func (s *Server) dialTunnel(ctx context.Context, target string) (net.Conn, error) {
+// maxAttempts and recording each outcome in the health tracker. `preferred` (a pinned
+// sticky upstream) is tried first when present. Returns the upstream that succeeded so the
+// caller can record session affinity. Shared by the CONNECT handler and the SOCKS listener.
+func (s *Server) dialTunnel(ctx context.Context, target, preferred string) (net.Conn, string, error) {
 	_, cands, err := s.selector.next(ctx)
 	if err != nil {
 		if rerr := s.selector.refresh(ctx); rerr != nil {
-			return nil, rerr
+			return nil, "", rerr
 		}
 		if _, cands, err = s.selector.next(ctx); err != nil {
-			return nil, err
+			return nil, "", err
 		}
+	}
+	if preferred != "" {
+		cands = moveToFront(cands, preferred)
 	}
 	maxAttempts := s.maxAttempts
 	if maxAttempts <= 0 {
@@ -432,14 +480,14 @@ func (s *Server) dialTunnel(ctx context.Context, target string) (net.Conn, error
 		s.selector.report(cand, derr == nil, time.Since(start))
 		s.metrics.AddUpstream(derr == nil)
 		if derr == nil {
-			return conn, nil
+			return conn, cand, nil
 		}
 		lastErr = derr
 	}
 	if lastErr != nil {
-		return nil, lastErr
+		return nil, "", lastErr
 	}
-	return nil, ErrNoProxyAvailable
+	return nil, "", ErrNoProxyAvailable
 }
 
 // idempotentMethod reports whether an HTTP method is safe to replay across upstreams on

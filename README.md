@@ -67,8 +67,13 @@ form accepts a `[database] path = …` section key.
 | `--apiAddr` | `127.0.0.1:8000` | API bind |
 | `--socksAddr` | `127.0.0.1:1080` | client SOCKS5 listener bind (`off` to disable) |
 | `--maxFailover` | `5` | max upstream proxies tried per request/tunnel |
+| `--stickyHeader` | _(off)_ | request header for session affinity (pins a session to an upstream) |
+| `--stickyTTL` | `10m` | sliding idle lifetime of a sticky-session pin |
 | `--proxyUser` / `--proxyPass` | _(off)_ | require auth on the relay (Basic) **and** SOCKS5 (user/pass) |
 | `--maxHosts` | `1048576` | (scan) cap on expanded host IPs |
+
+A ready-to-edit [`config.example.json`](config.example.json) lists every field; pass it
+with `--config config.example.json`.
 
 ## Proxy sources
 
@@ -86,7 +91,9 @@ dropped — so adding a new source is just adding its URL.
 - `minutes` — max age since last check (default `30`; `0` disables)
 - `format` — `json` (array of `{proxy,response_time,last_checked}`, fastest first) or `text`
 
-An empty match is `200` with an empty body. `GET /` serves HTML docs; `GET /health` → `ok`.
+An empty match is `200` with an empty body. `GET /` serves HTML docs. Probes: `GET /health`
+→ `ok` (liveness, always 200); `GET /ready` → `200` once ≥1 validated upstream exists, else
+`503` (readiness — use as a k8s readinessProbe / LB gate).
 
 Observability: `GET /stats` returns JSON `{proxies:{<type>:count}, relay:{…counters}}`;
 `GET /metrics` returns the same in Prometheus text format (`proxymachine_proxies`,
@@ -103,11 +110,27 @@ non-loopback address **without** `--proxyUser` logs a loud open-proxy warning. T
 caps a request body at 32 MiB (returns `413` above it). Disable the SOCKS5 listener
 entirely with `--socksAddr off`.
 
+## Docker
+
+```sh
+docker build -t proxymachine .
+# Safe default (loopback-only, so bind-mount a data volume and exec in, or expose explicitly):
+docker run -p 3333:3333 -p 8000:8000 -p 1080:1080 -v pm:/data proxymachine \
+  --relayAddr 0.0.0.0:3333 --apiAddr 0.0.0.0:8000 --socksAddr 0.0.0.0:1080 \
+  --proxyUser u --proxyPass p
+```
+
+The image is a static single binary on Alpine (CGO-free). Exposing on `0.0.0.0` **requires**
+`--proxyUser`/`--proxyPass` or you run an open proxy.
+
 ## Tests
 
 ```sh
 go test -race ./...
 ```
+
+CI (`.github/workflows/ci.yml`) runs gofmt, `go vet`, build, `go test -race ./...`, and a
+`docker build` on every push/PR.
 
 ## Notes / limitations
 
@@ -119,7 +142,11 @@ go test -race ./...
   unaffected and still authenticates the real target.
 - Upstream selection is **health-ranked**: alive/unknown proxies rotate (IP diversity);
   proven-slow ones are demoted and a proxy with a run of failures trips a **circuit
-  breaker** (skipped for a cooldown). Each request tries at most `--maxFailover` upstreams.
+  breaker** (skipped for a cooldown). Each request tries at most `--maxFailover` upstreams,
+  and each attempt is time-bounded so a hanging dead proxy can't eat the request budget.
+- **Session affinity** (`--stickyHeader`): relay/CONNECT requests carrying the header are
+  pinned to the upstream they last succeeded through (sliding `--stickyTTL`), so sites that
+  bind a session to the egress IP keep the same IP. Failover still applies if the pin dies.
 - socks4/4a proxies are validated (dialed through with the `pkg/socks` client, since
   net/http can't proxy socks4) and served/egressed like the other types.
 - Failover replays only idempotent methods (GET/HEAD/OPTIONS/TRACE/PUT/DELETE); POST/

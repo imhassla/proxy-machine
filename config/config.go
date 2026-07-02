@@ -37,6 +37,12 @@ type Config struct {
 	// before giving up (bounds the round-robin walk over a DB full of dead proxies).
 	MaxFailover int
 
+	// StickyHeader, when set, enables session affinity: relay requests carrying this header
+	// are pinned to the upstream they last succeeded through (empty → sticky disabled).
+	// StickyTTL is the sliding idle lifetime of a pin.
+	StickyHeader string
+	StickyTTL    time.Duration
+
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
 	// loopback default bind; a non-loopback RelayAddr should always set credentials).
@@ -56,12 +62,13 @@ func Load(args []string) (*Config, error) {
 		APIAddr:       "127.0.0.1:8000",
 		SocksAddr:     "127.0.0.1:1080",
 		MaxFailover:   5,
+		StickyTTL:     10 * time.Minute,
 	}
 
 	var configPath string
 	var workers, maxFailover int
-	var timeout, checkInterval time.Duration
-	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass string
+	var timeout, checkInterval, stickyTTL time.Duration
+	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
@@ -73,6 +80,8 @@ func Load(args []string) (*Config, error) {
 	fs.StringVar(&apiAddr, "apiAddr", "", "API listen address (default 127.0.0.1:8000)")
 	fs.StringVar(&socksAddr, "socksAddr", "", "Client SOCKS5 listen address (default 127.0.0.1:1080; 'off' to disable)")
 	fs.IntVar(&maxFailover, "maxFailover", -1, "Max upstream proxies tried per request (default 5)")
+	fs.StringVar(&stickyHeader, "stickyHeader", "", "Request header for session affinity (empty = off)")
+	fs.DurationVar(&stickyTTL, "stickyTTL", -1, "Sliding TTL of a sticky-session pin (default 10m)")
 	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
 	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
 
@@ -114,6 +123,12 @@ func Load(args []string) (*Config, error) {
 	if maxFailover >= 0 {
 		cfg.MaxFailover = maxFailover
 	}
+	if stickyHeader != "" {
+		cfg.StickyHeader = stickyHeader
+	}
+	if stickyTTL >= 0 {
+		cfg.StickyTTL = stickyTTL
+	}
 	if proxyUser != "" {
 		cfg.ProxyUser = proxyUser
 	}
@@ -150,6 +165,8 @@ type fileConfig struct {
 	APIAddr       *string `json:"apiAddr"`
 	SocksAddr     *string `json:"socksAddr"`
 	MaxFailover   *int    `json:"maxFailover"`
+	StickyHeader  *string `json:"stickyHeader"`
+	StickyTTL     *string `json:"stickyTTL"`
 	ProxyUser     *string `json:"proxyUser"`
 	ProxyPass     *string `json:"proxyPass"`
 }
@@ -231,6 +248,14 @@ func loadINI(data []byte, cfg *Config) error {
 			if fc.MaxFailover == nil {
 				fc.MaxFailover = &v
 			}
+		case "stickyheader":
+			if fc.StickyHeader == nil {
+				fc.StickyHeader = &val
+			}
+		case "stickyttl":
+			if fc.StickyTTL == nil {
+				fc.StickyTTL = &val
+			}
 		case "proxyuser":
 			if fc.ProxyUser == nil {
 				fc.ProxyUser = &val
@@ -285,6 +310,16 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 			return fmt.Errorf("maxFailover must be non-negative")
 		}
 		cfg.MaxFailover = *fc.MaxFailover
+	}
+	if fc.StickyHeader != nil {
+		cfg.StickyHeader = *fc.StickyHeader
+	}
+	if fc.StickyTTL != nil {
+		d, err := time.ParseDuration(*fc.StickyTTL)
+		if err != nil {
+			return fmt.Errorf("invalid stickyTTL value %q: %w", *fc.StickyTTL, err)
+		}
+		cfg.StickyTTL = d
 	}
 	if fc.ProxyUser != nil {
 		cfg.ProxyUser = *fc.ProxyUser

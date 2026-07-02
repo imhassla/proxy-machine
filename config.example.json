@@ -1,0 +1,18 @@
+{
+  "dbPath": "data.db",
+  "workers": 4,
+  "timeout": "30s",
+  "checkInterval": "60s",
+
+  "apiAddr": "127.0.0.1:8000",
+  "relayAddr": "127.0.0.1:3333",
+  "socksAddr": "127.0.0.1:1080",
+
+  "maxFailover": 5,
+
+  "stickyHeader": "",
+  "stickyTTL": "10m",
+
+  "proxyUser": "",
+  "proxyPass": ""
+}

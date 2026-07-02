@@ -42,6 +42,7 @@ func New(addr string, manager *checker.CheckManager, database *db.DB, m *metrics
 	mux.HandleFunc("/", s.handleDocs)
 	mux.HandleFunc("/proxy/{type}", s.handleProxy)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/ready", s.handleReady)
 	mux.HandleFunc("/stats", s.handleStats)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	s.srv = &http.Server{
@@ -92,6 +93,24 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 var serveTypes = []string{"http", "https", "socks4", "socks5"}
+
+// handleReady is a readiness probe: 200 once at least one validated upstream exists (so the
+// relay/SOCKS can actually serve traffic), 503 otherwise. Distinct from /health, which is
+// liveness (the process is up) and always 200. Useful as a k8s readinessProbe / LB gate.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	if s.db != nil {
+		for _, t := range serveTypes {
+			if n, err := s.db.CountByType(t); err == nil && n > 0 {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("ready"))
+				return
+			}
+		}
+	}
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte("no validated upstreams yet"))
+}
 
 // proxyCounts returns the number of validated proxies per type (missing/erroring types
 // report 0).
