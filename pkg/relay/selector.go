@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 var ErrNoProxyAvailable = errors.New("no alive proxy available")
@@ -29,13 +30,21 @@ type selector struct {
 	mu         sync.Mutex
 	candidates []string
 	nextIndex  int
+	health     *health
 }
 
 func newSelector(manager proxySource, db dbSource) *selector {
 	return &selector{
 		manager: manager,
 		db:      db,
+		health:  newHealth(),
 	}
+}
+
+// report records a request outcome for an upstream so future selections prefer fast,
+// reliable proxies and back off from failing ones (circuit breaker).
+func (s *selector) report(addr string, ok bool, latency time.Duration) {
+	s.health.report(addr, ok, latency)
 }
 
 func (s *selector) refresh(ctx context.Context) error {
@@ -93,15 +102,16 @@ func (s *selector) next(ctx context.Context) (string, []string, error) {
 	}
 
 	idx := s.nextIndex
-	pick := s.candidates[idx]
 	s.nextIndex = (idx + 1) % len(s.candidates)
 
-	// Return a fresh slice rotated to START at the pick, so a caller that iterates it
-	// (for failover) honors the round-robin order instead of always egressing through
-	// candidates[0]. A copy keeps the caller from mutating the selector's state.
-	ordered := make([]string, len(s.candidates))
+	// Rotate to START at the round-robin pick (fairness among equals), then re-order by
+	// health so proven-fast upstreams come first and circuit-open ones sink to the back.
+	// The sort is stable, so an all-unknown set keeps pure round-robin. A copy keeps the
+	// caller from mutating the selector's state.
+	rotated := make([]string, len(s.candidates))
 	for i := range s.candidates {
-		ordered[i] = s.candidates[(idx+i)%len(s.candidates)]
+		rotated[i] = s.candidates[(idx+i)%len(s.candidates)]
 	}
-	return pick, ordered, nil
+	ordered := s.health.order(rotated)
+	return ordered[0], ordered, nil
 }

@@ -26,10 +26,16 @@ type Config struct {
 	// stored proxies, validate fresh scan results / public lists, prune dead).
 	CheckInterval time.Duration
 
-	// RelayAddr / APIAddr are the listen addresses. Default to LOOPBACK so a fresh
-	// install is not an open proxy / open API exposed to the network.
+	// RelayAddr / APIAddr / SocksAddr are the listen addresses. Default to LOOPBACK so a
+	// fresh install is not an open proxy / open API exposed to the network. SocksAddr is
+	// the client-facing SOCKS5 listener (empty → disabled).
 	RelayAddr string
 	APIAddr   string
+	SocksAddr string
+
+	// MaxFailover caps how many upstream proxies a single relayed request/tunnel will try
+	// before giving up (bounds the round-robin walk over a DB full of dead proxies).
+	MaxFailover int
 
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
@@ -48,12 +54,14 @@ func Load(args []string) (*Config, error) {
 		CheckInterval: 60 * time.Second,
 		RelayAddr:     "127.0.0.1:3333",
 		APIAddr:       "127.0.0.1:8000",
+		SocksAddr:     "127.0.0.1:1080",
+		MaxFailover:   5,
 	}
 
 	var configPath string
-	var workers int
+	var workers, maxFailover int
 	var timeout, checkInterval time.Duration
-	var dbPath, relayAddr, apiAddr, proxyUser, proxyPass string
+	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
@@ -61,10 +69,12 @@ func Load(args []string) (*Config, error) {
 	fs.DurationVar(&timeout, "timeout", -1, "Timeout duration")
 	fs.DurationVar(&checkInterval, "checkInterval", -1, "Background re-check interval")
 	fs.StringVar(&dbPath, "dbPath", "", "Path to database file")
-	fs.StringVar(&relayAddr, "relayAddr", "", "Relay listen address (default 127.0.0.1:3333)")
+	fs.StringVar(&relayAddr, "relayAddr", "", "HTTP relay listen address (default 127.0.0.1:3333)")
 	fs.StringVar(&apiAddr, "apiAddr", "", "API listen address (default 127.0.0.1:8000)")
-	fs.StringVar(&proxyUser, "proxyUser", "", "Relay Basic-auth username (enables auth when set)")
-	fs.StringVar(&proxyPass, "proxyPass", "", "Relay Basic-auth password")
+	fs.StringVar(&socksAddr, "socksAddr", "", "Client SOCKS5 listen address (default 127.0.0.1:1080; 'off' to disable)")
+	fs.IntVar(&maxFailover, "maxFailover", -1, "Max upstream proxies tried per request (default 5)")
+	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
+	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -93,6 +103,16 @@ func Load(args []string) (*Config, error) {
 	}
 	if apiAddr != "" {
 		cfg.APIAddr = apiAddr
+	}
+	if socksAddr != "" {
+		if socksAddr == "off" || socksAddr == "none" {
+			cfg.SocksAddr = ""
+		} else {
+			cfg.SocksAddr = socksAddr
+		}
+	}
+	if maxFailover >= 0 {
+		cfg.MaxFailover = maxFailover
 	}
 	if proxyUser != "" {
 		cfg.ProxyUser = proxyUser
@@ -128,6 +148,8 @@ type fileConfig struct {
 	CheckInterval *string `json:"checkInterval"`
 	RelayAddr     *string `json:"relayAddr"`
 	APIAddr       *string `json:"apiAddr"`
+	SocksAddr     *string `json:"socksAddr"`
+	MaxFailover   *int    `json:"maxFailover"`
 	ProxyUser     *string `json:"proxyUser"`
 	ProxyPass     *string `json:"proxyPass"`
 }
@@ -197,6 +219,18 @@ func loadINI(data []byte, cfg *Config) error {
 			if fc.APIAddr == nil {
 				fc.APIAddr = &val
 			}
+		case "socksaddr":
+			if fc.SocksAddr == nil {
+				fc.SocksAddr = &val
+			}
+		case "maxfailover":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("invalid maxFailover value %q: %w", val, err)
+			}
+			if fc.MaxFailover == nil {
+				fc.MaxFailover = &v
+			}
 		case "proxyuser":
 			if fc.ProxyUser == nil {
 				fc.ProxyUser = &val
@@ -242,6 +276,15 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 	}
 	if fc.APIAddr != nil {
 		cfg.APIAddr = *fc.APIAddr
+	}
+	if fc.SocksAddr != nil {
+		cfg.SocksAddr = *fc.SocksAddr
+	}
+	if fc.MaxFailover != nil {
+		if *fc.MaxFailover < 0 {
+			return fmt.Errorf("maxFailover must be non-negative")
+		}
+		cfg.MaxFailover = *fc.MaxFailover
 	}
 	if fc.ProxyUser != nil {
 		cfg.ProxyUser = *fc.ProxyUser

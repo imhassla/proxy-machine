@@ -39,9 +39,11 @@ type Server struct {
 	stopOnce sync.Once
 	done     chan struct{} // closed by Stop to end the background refresh loop
 
-	selector *selector
-	pool     *transportPool
-	timeout  time.Duration
+	selector    *selector
+	pool        *transportPool
+	timeout     time.Duration
+	maxAttempts int // upstream proxies tried per request before giving up
+	socks       *SocksServer
 }
 
 // New creates a relay server from config: it listens on cfg.RelayAddr (default
@@ -61,13 +63,18 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB) *Se
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
+	maxAttempts := cfg.MaxFailover
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
 	s := &Server{
-		manager: manager,
-		db:      database,
-		user:    cfg.ProxyUser,
-		pass:    cfg.ProxyPass,
-		timeout: timeout,
-		done:    make(chan struct{}),
+		manager:     manager,
+		db:          database,
+		user:        cfg.ProxyUser,
+		pass:        cfg.ProxyPass,
+		timeout:     timeout,
+		maxAttempts: maxAttempts,
+		done:        make(chan struct{}),
 	}
 	// Convert nil concrete pointers to genuinely-nil interfaces: a (*CheckManager)(nil)
 	// or (*db.DB)(nil) stored directly would be a non-nil interface holding a nil value,
@@ -90,18 +97,29 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB) *Se
 		log.Printf("WARNING: relay bound to %s with no proxyUser — this is an OPEN PROXY reachable from the network; set proxyUser/proxyPass or bind to loopback", addr)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleRequest)
+	// A forward proxy must handle CONNECT, whose request-target is authority-form
+	// ("host:port", no leading "/"). http.ServeMux routes by path and 404s such requests
+	// before the handler runs, so the relay serves a single HandlerFunc directly.
 	s.srv = &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           http.HandlerFunc(s.handleRequest),
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      timeout + 5*time.Second,
 		IdleTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 2 * time.Second,
 	}
+
+	// Optional client-facing SOCKS5 listener, tunneling through the same rotating,
+	// health-ranked upstreams as the HTTP relay. Empty SocksAddr disables it.
+	if cfg.SocksAddr != "" {
+		s.socks = NewSocks(cfg.SocksAddr, cfg.ProxyUser, cfg.ProxyPass, timeout, s.dialTunnel)
+	}
 	return s
 }
+
+// Socks returns the client-facing SOCKS5 server, or nil if SocksAddr was empty. The caller
+// runs its Start/Stop lifecycle alongside the HTTP relay.
+func (s *Server) Socks() *SocksServer { return s.socks }
 
 // isLoopbackAddr reports whether a listen address binds only the loopback interface.
 // A bare ":port" / "0.0.0.0:port" / a public host counts as non-loopback (reachable).
@@ -178,13 +196,17 @@ func (s *Server) authOK(r *http.Request) bool {
 }
 
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodConnect {
-		http.Error(w, "CONNECT not supported", http.StatusNotImplemented)
-		return
-	}
 	if !s.authOK(r) {
 		w.Header().Set("Proxy-Authenticate", `Basic realm="proxy-machine"`)
 		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
+		return
+	}
+
+	// CONNECT is an HTTPS (or any-TCP) tunnel request: establish a byte pipe to the target
+	// THROUGH a rotating upstream, then splice the client to it. This is what makes the
+	// relay usable for HTTPS traffic, not just plaintext HTTP.
+	if r.Method == http.MethodConnect {
+		s.handleConnect(w, r)
 		return
 	}
 
@@ -225,8 +247,19 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Bound the failover walk: without this a request against a DB full of dead proxies
+	// would try every one until the request timeout elapsed. maxAttempts<=0 means unbounded.
+	maxAttempts := s.maxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = len(candidates)
+	}
 	var lastErr error
+	attempts := 0
 	for _, proxyAddr := range candidates {
+		if attempts >= maxAttempts {
+			break
+		}
+		attempts++
 		client := s.pool.get(proxyAddr)
 
 		outURL := r.URL
@@ -255,7 +288,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		stripHopByHop(outReq.Header)
 
+		start := time.Now()
 		resp, err := client.Do(outReq)
+		// Feed the outcome to the health tracker so future selections prefer this upstream
+		// (on success, by latency) or back off from it (circuit breaker on repeated fails).
+		s.selector.report(proxyAddr, err == nil, time.Since(start))
 		if err != nil {
 			lastErr = err
 			// Fail over to the next upstream ONLY for idempotent/safe methods. A
@@ -289,6 +326,99 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "proxy request failed: all upstreams failed", http.StatusBadGateway)
+}
+
+// handleConnect services an HTTP CONNECT: it opens a byte tunnel to r.Host through a
+// rotating upstream, replies 200, and splices the hijacked client conn to it. This lets a
+// browser/curl send HTTPS (or any TCP) through the relay, tunneled over the upstream proxy.
+func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	target := r.Host
+	if target == "" {
+		target = r.URL.Host
+	}
+	if _, _, err := net.SplitHostPort(target); err != nil {
+		http.Error(w, "invalid CONNECT target", http.StatusBadRequest)
+		return
+	}
+
+	// Dial the upstream BEFORE hijacking, so a dial failure is a clean HTTP error response
+	// rather than a half-open hijacked connection.
+	dctx, cancel := context.WithTimeout(r.Context(), s.timeout)
+	upstream, err := s.dialTunnel(dctx, target)
+	cancel()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("connect failed: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	hij, ok := w.(http.Hijacker)
+	if !ok {
+		_ = upstream.Close()
+		http.Error(w, "connect unsupported", http.StatusInternalServerError)
+		return
+	}
+	clientConn, brw, err := hij.Hijack()
+	if err != nil {
+		_ = upstream.Close()
+		return
+	}
+	// We own the conn now; a tunnel can be long-lived, so drop the server's I/O deadlines.
+	_ = clientConn.SetDeadline(time.Time{})
+	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+		_ = clientConn.Close()
+		_ = upstream.Close()
+		return
+	}
+
+	// The client may have pipelined bytes after CONNECT (e.g. the TLS ClientHello) into the
+	// hijack buffer. Drain them and front them so the tunnel doesn't lose the handshake.
+	var clientReader io.Reader = clientConn
+	if brw != nil && brw.Reader.Buffered() > 0 {
+		n := brw.Reader.Buffered()
+		pre := make([]byte, n)
+		if _, err := io.ReadFull(brw.Reader, pre); err == nil {
+			clientReader = io.MultiReader(bytes.NewReader(pre), clientConn)
+		}
+	}
+	pipe(&prefixConn{Conn: clientConn, r: clientReader}, upstream)
+}
+
+// dialTunnel opens a tunnel to target through the best available upstreams, trying at most
+// maxAttempts and recording each outcome in the health tracker. Shared by the CONNECT
+// handler and the SOCKS5 listener.
+func (s *Server) dialTunnel(ctx context.Context, target string) (net.Conn, error) {
+	_, cands, err := s.selector.next(ctx)
+	if err != nil {
+		if rerr := s.selector.refresh(ctx); rerr != nil {
+			return nil, rerr
+		}
+		if _, cands, err = s.selector.next(ctx); err != nil {
+			return nil, err
+		}
+	}
+	maxAttempts := s.maxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = len(cands)
+	}
+	var lastErr error
+	attempts := 0
+	for _, cand := range cands {
+		if attempts >= maxAttempts {
+			break
+		}
+		attempts++
+		start := time.Now()
+		conn, derr := dialUpstream(ctx, cand, target, s.timeout)
+		s.selector.report(cand, derr == nil, time.Since(start))
+		if derr == nil {
+			return conn, nil
+		}
+		lastErr = derr
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, ErrNoProxyAvailable
 }
 
 // idempotentMethod reports whether an HTTP method is safe to replay across upstreams on

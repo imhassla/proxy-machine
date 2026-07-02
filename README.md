@@ -2,9 +2,9 @@
 
 A single-binary Go port of proxy-machine: harvest proxy candidates by port-scanning,
 **validate** them by proxying through each (origin ≠ self-IP), **store** survivors in
-SQLite, and **serve** them via an HTTP API and a rotating HTTP relay. This is the primary
-implementation; the original Python version lives in [`python/`](python) (legacy)
-and is the behavioral spec.
+SQLite, and **serve** them via an HTTP API, a rotating HTTP/HTTPS relay (CONNECT
+tunneling), and a client-facing SOCKS5 listener. This is the primary implementation; the
+original Python version lives in [`python/`](python) (legacy) and is the behavioral spec.
 
 ## Pipeline
 
@@ -19,12 +19,15 @@ stored proxies (recheck) ─────►   • validate: GET httpbin.org/ip t
                                   • prune proxies that no longer validate
                                   • consume _scan_results
                                         │
-                  ┌─────────────────────┴───────────────────────┐
-                  ▼                                              ▼
-        API (:8000, loopback)                  HTTP relay (:3333, loopback)
-        GET /proxy/{type}?time=&minutes=        forwards client requests through a rotating,
-        served from the per-type tables         validated upstream proxy, dialed with its own
-                                                scheme (http/https/socks5); refreshed every 15s
+          ┌───────────────────────┼───────────────────────────┐
+          ▼                       ▼                           ▼
+  API (:8000)          HTTP/HTTPS relay (:3333)      SOCKS5 listener (:1080)
+  GET /proxy/{type}    forwards HTTP + tunnels        clients dial socks5://;
+  ?time=&minutes=      HTTPS (CONNECT) through a      tunnels through the same
+  from per-type        rotating, health-ranked        rotating upstreams. All
+  tables               validated upstream (dialed     three loopback by default.
+                       http/https/socks5); bounded
+                       failover + circuit breaker.
 ```
 
 ## Build & run
@@ -32,8 +35,13 @@ stored proxies (recheck) ─────►   • validate: GET httpbin.org/ip t
 ```sh
 go build -o proxymachine .
 
-# Service (checker loop + API + relay):
+# Service (checker loop + API + HTTP/HTTPS relay + SOCKS5 listener):
 ./proxymachine --dbPath data.db
+
+# Use it — every request egresses through a rotating validated upstream:
+curl -x http://127.0.0.1:3333 http://httpbin.org/ip        # HTTP via relay
+curl -x http://127.0.0.1:3333 https://httpbin.org/ip       # HTTPS via relay (CONNECT)
+curl --socks5-hostname 127.0.0.1:1080 https://httpbin.org/ip  # via SOCKS5 listener
 
 # One-shot port scan → _scan_results (the checker validates them next cycle):
 ./proxymachine scan -cidr 192.0.2.0/24 -port 8080,3128 --dbPath data.db
@@ -56,9 +64,11 @@ form accepts a `[database] path = …` section key (matching `python/config.ini`
 | `--workers` | `4` | validation worker pool size |
 | `--timeout` | `30s` | per-request timeout (list/IP fetch and per-proxy check) |
 | `--checkInterval` | `60s` | background re-validation cadence |
-| `--relayAddr` | `127.0.0.1:3333` | relay bind |
+| `--relayAddr` | `127.0.0.1:3333` | HTTP relay bind (forwards HTTP + tunnels HTTPS via CONNECT) |
 | `--apiAddr` | `127.0.0.1:8000` | API bind |
-| `--proxyUser` / `--proxyPass` | _(off)_ | require Basic `Proxy-Authorization` on the relay |
+| `--socksAddr` | `127.0.0.1:1080` | client SOCKS5 listener bind (`off` to disable) |
+| `--maxFailover` | `5` | max upstream proxies tried per request/tunnel |
+| `--proxyUser` / `--proxyPass` | _(off)_ | require auth on the relay (Basic) **and** SOCKS5 (user/pass) |
 | `--maxHosts` | `1048576` | (scan) cap on expanded host IPs |
 
 ## Proxy sources
@@ -83,12 +93,14 @@ An empty match is `200` with an empty body. `GET /` serves HTML docs; `GET /heal
 
 ## Security defaults
 
-The relay and API bind to **loopback** by default — a fresh install is **not** an open
-proxy. To expose the relay on a network, set `--relayAddr 0.0.0.0:3333` **and**
-`--proxyUser`/`--proxyPass`; every relay request then needs Basic `Proxy-Authorization`
-(the credential is hop-by-hop-stripped and never forwarded upstream). Binding to a
+The API, HTTP relay and SOCKS5 listener all bind to **loopback** by default — a fresh
+install is **not** an open proxy. To expose the relay/SOCKS on a network, widen the bind
+(e.g. `--relayAddr 0.0.0.0:3333`) **and** set `--proxyUser`/`--proxyPass`: relay requests
+then need Basic `Proxy-Authorization` and SOCKS5 clients need RFC 1929 username/password
+(the credential is hop-by-hop-stripped / never forwarded upstream). Binding either to a
 non-loopback address **without** `--proxyUser` logs a loud open-proxy warning. The relay
-caps a request body at 32 MiB (returns `413` above it).
+caps a request body at 32 MiB (returns `413` above it). Disable the SOCKS5 listener
+entirely with `--socksAddr off`.
 
 ## Tests
 
@@ -98,9 +110,15 @@ go test -race ./...
 
 ## Notes / limitations
 
-- The relay is an HTTP forward proxy (matches `python/http-proxy-relay.py`); it
-  does not implement CONNECT/HTTPS tunneling of client traffic. It *does* dial upstream
-  http/https/socks5 proxies with the correct scheme.
+- The relay forwards plaintext HTTP (superset of `python/http-proxy-relay.py`) **and**
+  tunnels HTTPS/any-TCP via `CONNECT`. A client-facing **SOCKS5** listener (CONNECT only;
+  no BIND/UDP) tunnels through the same upstreams. Both dial upstream http/https/socks5
+  proxies with the correct scheme; an https upstream's TLS hop is not cert-verified (free
+  proxies rarely present valid certs) — the client's end-to-end TLS inside the tunnel is
+  unaffected and still authenticates the real target.
+- Upstream selection is **health-ranked**: alive/unknown proxies rotate (IP diversity);
+  proven-slow ones are demoted and a proxy with a run of failures trips a **circuit
+  breaker** (skipped for a cooldown). Each request tries at most `--maxFailover` upstreams.
 - socks4 proxies are harvested by the scanner but not validated/served by the Go pipeline
   (net/http cannot proxy socks4) — a documented follow-up needing a manual SOCKS4 client.
 - Failover replays only idempotent methods (GET/HEAD/OPTIONS/TRACE/PUT/DELETE); POST/

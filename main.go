@@ -64,10 +64,11 @@ func runService(args []string) error {
 	// A server's Start() returns only on Shutdown (ErrServerClosed) or a fatal listen
 	// error (e.g. address in use). Surface the fatal case on startErr so the service
 	// fails fast instead of running degraded forever with a dead listener.
-	startErr := make(chan error, 2)
+	startErr := make(chan error, 3)
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
+		log.Printf("api server listening on http://%s (docs at /, proxies at /proxy/{type})", cfg.APIAddr)
 		if err := server.Start(); err != nil && err != http.ErrServerClosed {
 			startErr <- fmt.Errorf("api server: %w", err)
 		}
@@ -76,9 +77,23 @@ func runService(args []string) error {
 	relayDone := make(chan struct{})
 	go func() {
 		defer close(relayDone)
-		log.Printf("relay server listening on %s", cfg.RelayAddr)
+		log.Printf("relay server (HTTP + CONNECT) listening on %s", cfg.RelayAddr)
 		if err := relayServer.Start(); err != nil && err != http.ErrServerClosed {
 			startErr <- fmt.Errorf("relay server: %w", err)
+		}
+	}()
+
+	// Optional client-facing SOCKS5 listener (nil when SocksAddr is empty/off).
+	socksServer := relayServer.Socks()
+	socksDone := make(chan struct{})
+	go func() {
+		defer close(socksDone)
+		if socksServer == nil {
+			return
+		}
+		log.Printf("socks5 server listening on %s", cfg.SocksAddr)
+		if err := socksServer.Start(); err != nil {
+			startErr <- fmt.Errorf("socks server: %w", err)
 		}
 	}()
 
@@ -101,9 +116,13 @@ func runService(args []string) error {
 	}
 	stopWithin("api server", server.Stop)
 	stopWithin("relay server", relayServer.Stop)
+	if socksServer != nil {
+		stopWithin("socks server", socksServer.Stop)
+	}
 
 	<-serverDone
 	<-relayDone
+	<-socksDone
 	<-checkerDone
 
 	if err := database.Close(); err != nil {
