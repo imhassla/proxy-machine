@@ -59,6 +59,19 @@ func (s *stickyStore) set(key, addr string) {
 	s.m[key] = stickyEntry{addr: addr, expiry: s.now().Add(s.ttl)}
 }
 
+// reap deletes expired pins, bounding the map when sticky keys are high-cardinality
+// (per-user tokens) that never recur. Called periodically from the relay refresh loop.
+func (s *stickyStore) reap() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	for k, e := range s.m {
+		if now.After(e.expiry) {
+			delete(s.m, k)
+		}
+	}
+}
+
 // moveToFront returns cands with addr promoted to the front (if present), so a pinned
 // upstream is tried first while still allowing failover to the rest.
 func moveToFront(cands []string, addr string) []string {

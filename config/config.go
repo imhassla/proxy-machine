@@ -48,6 +48,10 @@ type Config struct {
 	StickyHeader string
 	StickyTTL    time.Duration
 
+	// Sources, when non-empty, REPLACES the built-in public proxy-list URLs the checker
+	// harvests from. Each source's type is inferred from its URL (http/socks4/socks5).
+	Sources []string
+
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
 	// loopback default bind; a non-loopback RelayAddr should always set credentials).
@@ -74,7 +78,7 @@ func Load(args []string) (*Config, error) {
 	var configPath string
 	var workers, maxFailover int
 	var timeout, checkInterval, stickyTTL, connectTimeout time.Duration
-	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader string
+	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
@@ -89,6 +93,7 @@ func Load(args []string) (*Config, error) {
 	fs.IntVar(&maxFailover, "maxFailover", -1, "Max upstream proxies tried per request (default 5)")
 	fs.StringVar(&stickyHeader, "stickyHeader", "", "Request header for session affinity (empty = off)")
 	fs.DurationVar(&stickyTTL, "stickyTTL", -1, "Sliding TTL of a sticky-session pin (default 10m)")
+	fs.StringVar(&sourcesArg, "sources", "", "Comma-separated proxy-list URLs (replaces the built-in sources)")
 	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
 	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
 
@@ -139,6 +144,9 @@ func Load(args []string) (*Config, error) {
 	if stickyTTL >= 0 {
 		cfg.StickyTTL = stickyTTL
 	}
+	if sourcesArg != "" {
+		cfg.Sources = splitCommaTrim(sourcesArg)
+	}
 	if proxyUser != "" {
 		cfg.ProxyUser = proxyUser
 	}
@@ -167,19 +175,31 @@ func loadFile(path string, cfg *Config) error {
 }
 
 type fileConfig struct {
-	Workers        *int    `json:"workers"`
-	Timeout        *string `json:"timeout"`
-	ConnectTimeout *string `json:"connectTimeout"`
-	DBPath         *string `json:"dbPath"`
-	CheckInterval  *string `json:"checkInterval"`
-	RelayAddr      *string `json:"relayAddr"`
-	APIAddr        *string `json:"apiAddr"`
-	SocksAddr      *string `json:"socksAddr"`
-	MaxFailover    *int    `json:"maxFailover"`
-	StickyHeader   *string `json:"stickyHeader"`
-	StickyTTL      *string `json:"stickyTTL"`
-	ProxyUser      *string `json:"proxyUser"`
-	ProxyPass      *string `json:"proxyPass"`
+	Workers        *int      `json:"workers"`
+	Timeout        *string   `json:"timeout"`
+	ConnectTimeout *string   `json:"connectTimeout"`
+	DBPath         *string   `json:"dbPath"`
+	CheckInterval  *string   `json:"checkInterval"`
+	RelayAddr      *string   `json:"relayAddr"`
+	APIAddr        *string   `json:"apiAddr"`
+	SocksAddr      *string   `json:"socksAddr"`
+	MaxFailover    *int      `json:"maxFailover"`
+	StickyHeader   *string   `json:"stickyHeader"`
+	StickyTTL      *string   `json:"stickyTTL"`
+	Sources        *[]string `json:"sources"`
+	ProxyUser      *string   `json:"proxyUser"`
+	ProxyPass      *string   `json:"proxyPass"`
+}
+
+// splitCommaTrim splits a comma-separated list, trimming blanks.
+func splitCommaTrim(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func loadJSON(data []byte, cfg *Config) error {
@@ -267,6 +287,11 @@ func loadINI(data []byte, cfg *Config) error {
 			if fc.StickyHeader == nil {
 				fc.StickyHeader = &val
 			}
+		case "sources":
+			if fc.Sources == nil {
+				s := splitCommaTrim(val)
+				fc.Sources = &s
+			}
 		case "stickyttl":
 			if fc.StickyTTL == nil {
 				fc.StickyTTL = &val
@@ -348,6 +373,9 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 			return fmt.Errorf("invalid stickyTTL value %q: %w", *fc.StickyTTL, err)
 		}
 		cfg.StickyTTL = d
+	}
+	if fc.Sources != nil {
+		cfg.Sources = *fc.Sources
 	}
 	if fc.ProxyUser != nil {
 		cfg.ProxyUser = *fc.ProxyUser

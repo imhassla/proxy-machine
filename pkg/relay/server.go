@@ -173,6 +173,12 @@ func (s *Server) refreshLoop() {
 			return
 		case <-t.C:
 			_ = s.selector.refresh(context.Background())
+			// Prune caches to the live candidate set so they don't grow unbounded over
+			// long uptime as proxy addresses churn.
+			s.pool.retain(s.selector.targetSet())
+			if s.sticky != nil {
+				s.sticky.reap()
+			}
 		}
 	}
 }
@@ -243,7 +249,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var candidates []string
 	addr, cands, err := s.selector.next(ctx)
 	if err != nil {
-		if err := s.selector.refresh(ctx); err != nil {
+		if err := s.selector.tryRefresh(ctx); err != nil {
 			s.metrics.IncRelayFailure()
 			http.Error(w, fmt.Sprintf("no proxy available: %v", err), http.StatusServiceUnavailable)
 			return
@@ -453,7 +459,7 @@ func (s *Server) socksDial(ctx context.Context, target string) (net.Conn, error)
 func (s *Server) dialTunnel(ctx context.Context, target, preferred string) (net.Conn, string, error) {
 	_, cands, err := s.selector.next(ctx)
 	if err != nil {
-		if rerr := s.selector.refresh(ctx); rerr != nil {
+		if rerr := s.selector.tryRefresh(ctx); rerr != nil {
 			return nil, "", rerr
 		}
 		if _, cands, err = s.selector.next(ctx); err != nil {

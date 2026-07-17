@@ -14,6 +14,9 @@
   "stickyHeader": "",
   "stickyTTL": "10m",
 
+  "_comment_sources": "Optional: replace the built-in proxy-list URLs. Type is inferred from each URL (http/socks4/socks5).",
+  "sources": [],
+
   "proxyUser": "",
   "proxyPass": ""
 }

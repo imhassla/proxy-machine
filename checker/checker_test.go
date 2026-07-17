@@ -156,10 +156,14 @@ func TestCheckManager_PrunesDeadStored(t *testing.T) {
 	}
 	cm := New(&config.Config{Workers: 1, Timeout: 2 * time.Second}, d)
 
-	cm.RunCycle(context.Background())
+	// Pruning has a grace period (pruneThreshold consecutive failed rechecks), so run enough
+	// cycles for the dead proxy to exhaust it.
+	for i := 0; i < pruneThreshold; i++ {
+		cm.RunCycle(context.Background())
+	}
 
 	if stored, _ := d.GetProxiesByType("http"); contains(stored, dead) {
-		t.Errorf("dead proxy not pruned: %v", stored)
+		t.Errorf("dead proxy not pruned after %d cycles: %v", pruneThreshold, stored)
 	}
 }
 
@@ -343,7 +347,9 @@ func TestCheckManager_PrunesDeadStoredEvenIfReappears(t *testing.T) {
 		t.Fatal(err)
 	}
 	cm := New(&config.Config{Workers: 1, Timeout: time.Second}, d)
-	cm.RunCycle(context.Background())
+	for i := 0; i < pruneThreshold; i++ {
+		cm.RunCycle(context.Background())
+	}
 
 	if stored, _ := d.GetProxiesByType("http"); contains(stored, dead) {
 		t.Errorf("dead proxy present on both DB and public list was not pruned: %v", stored)

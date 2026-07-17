@@ -88,6 +88,20 @@ func (p *transportPool) get(target string) *http.Client {
 	return client
 }
 
+// retain closes and drops pooled clients whose target is no longer a live candidate, so the
+// pool (a *http.Client + idle conns per distinct type://addr) can't grow unbounded as
+// free-proxy addresses churn over long uptime. Called on each selector refresh.
+func (p *transportPool) retain(keep map[string]struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for target, client := range p.clients {
+		if _, ok := keep[target]; !ok {
+			client.CloseIdleConnections()
+			delete(p.clients, target)
+		}
+	}
+}
+
 func (p *transportPool) close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

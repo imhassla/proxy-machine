@@ -71,6 +71,25 @@ func TestHealthSlowDemotionKeepsRotation(t *testing.T) {
 	}
 }
 
+// retain drops health entries for addresses no longer in the live candidate set.
+func TestHealthRetainEvicts(t *testing.T) {
+	h := newHealth()
+	h.report("http://a:80", true, time.Millisecond)
+	h.report("http://b:80", false, 0)
+	h.report("http://gone:80", true, time.Millisecond)
+
+	h.retain(map[string]struct{}{"http://a:80": {}, "http://b:80": {}})
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.m["http://gone:80"]; ok {
+		t.Fatal("retain did not evict an addr outside the keep set")
+	}
+	if _, ok := h.m["http://a:80"]; !ok {
+		t.Fatal("retain evicted an addr that is in the keep set")
+	}
+}
+
 // An all-unknown set is returned in the exact input order (pure round-robin upstream).
 func TestHealthUnknownPreservesOrder(t *testing.T) {
 	h := newHealth()

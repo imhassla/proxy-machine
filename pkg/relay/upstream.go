@@ -138,8 +138,12 @@ func pipe(a, b net.Conn) {
 				break
 			}
 		}
-		// Unblock the other direction: a deadline in the past collapses the peer's Read.
-		_ = dst.SetDeadline(time.Now())
+		// Unblock the other direction PROMPTLY: set a past deadline on BOTH conns, so a peer
+		// blocked in Write (not Read) collapses immediately instead of waiting out the idle
+		// backstop.
+		now := time.Now()
+		_ = src.SetDeadline(now)
+		_ = dst.SetDeadline(now)
 		done <- struct{}{}
 	}
 	go cp(a, b)

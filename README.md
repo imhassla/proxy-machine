@@ -79,10 +79,19 @@ with `--config config.example.json`.
 ## Proxy sources
 
 The checker harvests candidates from re-verified public lists (HTTP/SOCKS4/SOCKS5), then
-validates every one before storing it. The source set is `publicProxyURLs` in
-[`checker/checker.go`](checker/checker.go). The parser normalizes each line — bare
-`ip:port`, `scheme://ip:port`, and trailing columns are all accepted, and junk lines are
-dropped — so adding a new source is just adding its URL.
+validates every one before storing it. The built-in set is `publicProxyURLs` in
+[`checker/checker.go`](checker/checker.go); override it without recompiling via
+`--sources url1,url2` (or a `"sources": [...]` config array). Each source's type is inferred
+from its URL. The parser normalizes each line — bare `ip:port`, `scheme://ip:port`, and
+trailing columns are all accepted, and junk lines are dropped.
+
+**On "https" sources:** there is no usable public list of true *TLS-to-proxy* (https)
+proxies — files named `…-https.txt` contain plaintext HTTP proxies that support `CONNECT`,
+which belong in the http pool. Any validated **http/socks** proxy already carries HTTPS
+traffic: the client (or the relay) sends `CONNECT host:443` to the proxy, the proxy opens a
+raw tunnel, and end-to-end TLS runs **inside** that tunnel — the proxy never sees the
+plaintext. That's why `/proxy/https` (dial-scheme = TLS-to-proxy) is legitimately sparse
+while http/socks proxies are your HTTPS-capable pool.
 
 ## API
 

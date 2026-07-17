@@ -48,6 +48,10 @@ func runService(args []string) error {
 	}
 
 	manager := checker.New(cfg, database)
+	if len(cfg.Sources) > 0 {
+		manager.ListURLs = cfg.Sources
+		log.Printf("checker: using %d configured proxy sources (overriding built-in list)", len(cfg.Sources))
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

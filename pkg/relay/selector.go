@@ -24,6 +24,16 @@ type dbSource interface {
 	GetProxiesByType(proxyType string) ([]string, error)
 }
 
+// returnWindow bounds how many candidates next() copies + health-orders per request. The
+// failover loop only tries maxFailover (default 5); returning a small rotated window keeps
+// per-request allocation O(1) instead of O(total-proxies) as the DB grows, while giving
+// ample failover headroom. Round-robin across requests still sweeps the whole set.
+const returnWindow = 64
+
+// minOnDemandRefresh throttles the empty-cache on-demand refresh so a burst of requests
+// during a cold/empty window doesn't stampede the single SQLite connection.
+const minOnDemandRefresh = 2 * time.Second
+
 type selector struct {
 	manager    proxySource
 	db         dbSource
@@ -31,6 +41,10 @@ type selector struct {
 	candidates []string
 	nextIndex  int
 	health     *health
+
+	rmu         sync.Mutex // guards the on-demand refresh throttle
+	refreshing  bool
+	lastRefresh time.Time
 }
 
 func newSelector(manager proxySource, db dbSource) *selector {
@@ -82,6 +96,10 @@ func (s *selector) refresh(ctx context.Context) error {
 		}
 	}
 
+	// Evict health entries for upstreams no longer in the candidate set, so the health map
+	// can't grow unbounded as free-proxy addresses churn over days of uptime.
+	s.health.retain(seen)
+
 	if len(list) == 0 {
 		return ErrNoProxyAvailable
 	}
@@ -93,25 +111,62 @@ func (s *selector) refresh(ctx context.Context) error {
 	return nil
 }
 
+// tryRefresh is the on-demand refresh used when next() finds no candidates. It single-flights
+// (only one refresh runs at a time) and rate-limits, so a thundering herd of relay requests
+// in an empty-cache window doesn't serialize behind selector.mu + the single DB connection.
+func (s *selector) tryRefresh(ctx context.Context) error {
+	s.rmu.Lock()
+	if s.refreshing || (!s.lastRefresh.IsZero() && time.Since(s.lastRefresh) < minOnDemandRefresh) {
+		s.rmu.Unlock()
+		return ErrNoProxyAvailable // another goroutine is refreshing, or we refreshed just now
+	}
+	s.refreshing = true
+	s.rmu.Unlock()
+
+	err := s.refresh(ctx)
+
+	s.rmu.Lock()
+	s.refreshing = false
+	s.lastRefresh = time.Now()
+	s.rmu.Unlock()
+	return err
+}
+
+// targetSet returns the current candidate set (as a lookup set) for pruning caches keyed by
+// the same "type://addr" strings (e.g. the transport pool).
+func (s *selector) targetSet() map[string]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set := make(map[string]struct{}, len(s.candidates))
+	for _, c := range s.candidates {
+		set[c] = struct{}{}
+	}
+	return set
+}
+
 func (s *selector) next(ctx context.Context) (string, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(s.candidates) == 0 {
+	n := len(s.candidates)
+	if n == 0 {
 		return "", nil, ErrNoProxyAvailable
 	}
 
 	idx := s.nextIndex
-	s.nextIndex = (idx + 1) % len(s.candidates)
+	s.nextIndex = (idx + 1) % n
 
-	// Rotate to START at the round-robin pick (fairness among equals), then re-order by
-	// health so proven-fast upstreams come first and circuit-open ones sink to the back.
-	// The sort is stable, so an all-unknown set keeps pure round-robin. A copy keeps the
-	// caller from mutating the selector's state.
-	rotated := make([]string, len(s.candidates))
-	for i := range s.candidates {
-		rotated[i] = s.candidates[(idx+i)%len(s.candidates)]
+	// Copy a bounded rotated window (round-robin start for fairness), then health-order just
+	// that window so alive/fast upstreams lead and circuit-open ones sink — O(returnWindow),
+	// not O(n).
+	w := returnWindow
+	if w > n {
+		w = n
 	}
-	ordered := s.health.order(rotated)
+	window := make([]string, w)
+	for i := 0; i < w; i++ {
+		window[i] = s.candidates[(idx+i)%n]
+	}
+	ordered := s.health.order(window)
 	return ordered[0], ordered, nil
 }

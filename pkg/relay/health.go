@@ -69,6 +69,18 @@ func (h *health) report(addr string, ok bool, latency time.Duration) {
 	}
 }
 
+// retain drops health entries whose addr is not in keep, so the map can't grow unbounded as
+// free-proxy addresses churn. Called on each selector refresh with the live candidate set.
+func (h *health) retain(keep map[string]struct{}) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for addr := range h.m {
+		if _, ok := keep[addr]; !ok {
+			delete(h.m, addr)
+		}
+	}
+}
+
 // rank buckets a candidate for ordering (lower is preferred):
 //
 //	0 = alive-and-not-slow, OR unknown (no history) — tried first, in round-robin order

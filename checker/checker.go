@@ -58,6 +58,8 @@ var (
 		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
 		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
 		"https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+		"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+		"https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
 		// http (scheme://ip:port — normalized)
 		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
 		// NOTE: no public "https proxy" list is included. Files named proxies-https.txt
@@ -74,10 +76,14 @@ var (
 		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
 		"https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
 		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt",
+		"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+		"https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
 		// socks4
 		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
 		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
 		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt",
+		"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt",
+		"https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt",
 	}
 )
 
@@ -98,6 +104,11 @@ type checkResult struct {
 	ok  bool
 }
 
+// pruneThreshold is how many CONSECUTIVE failed rechecks a stored proxy must accumulate
+// before it's deleted. Free proxies flap, so pruning on a single failure evicts working
+// ones and inflates re-harvest churn; a small grace keeps intermittent proxies alive.
+const pruneThreshold = 3
+
 // CheckManager orchestrates proxy harvesting, validation, persistence and serving.
 type CheckManager struct {
 	cfg          *config.Config
@@ -105,6 +116,11 @@ type CheckManager struct {
 	cache        map[string][]string
 	mu           sync.RWMutex
 	directClient *http.Client
+
+	// recheckFails counts consecutive failed rechecks per "typ|addr" (touched only by the
+	// single RunCycle goroutine). A proxy is pruned once it reaches pruneThreshold; any
+	// success resets it.
+	recheckFails map[string]int
 
 	// Endpoints used for validation, each a failover list tried in order. Default to the
 	// public IP-echo / proxy-list URLs; overridable (e.g. self-hosted echoes, or to point
@@ -128,6 +144,7 @@ func New(cfg *config.Config, database *db.DB) *CheckManager {
 		db:           database,
 		cache:        make(map[string][]string),
 		directClient: &http.Client{Timeout: timeout},
+		recheckFails: make(map[string]int),
 		IPURLs:       publicIPURLs,
 		TestURLs:     proxyTestURLs,
 		ListURLs:     publicProxyURLs,
@@ -199,9 +216,11 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 	// proxies within seconds of startup instead of after the whole multi-minute sweep.
 	for r := range cm.validateStream(ctx, sip, jobs) {
 		processed++
+		key := r.job.typ + "|" + r.job.addr
 		if r.ok {
 			okCount++
 			stored[r.job.typ]++
+			delete(cm.recheckFails, key) // success resets the failure streak
 			if cm.db != nil {
 				// last_checked at the moment of storing (not cycle start): in a long cycle
 				// a cycle-start timestamp would already be stale and get filtered by the
@@ -217,8 +236,14 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 				log.Printf("checker: progress — %d valid so far (%d/%d checked)", okCount, processed, len(jobs))
 			}
 		} else if r.job.recheck && cm.db != nil {
-			prune[r.job.typ] = append(prune[r.job.typ], r.job.addr)
-			prunedCount++
+			// Grace: only prune after pruneThreshold CONSECUTIVE failed rechecks, so a
+			// momentarily-flaky proxy isn't evicted (and re-harvested) on one bad cycle.
+			cm.recheckFails[key]++
+			if cm.recheckFails[key] >= pruneThreshold {
+				prune[r.job.typ] = append(prune[r.job.typ], r.job.addr)
+				delete(cm.recheckFails, key)
+				prunedCount++
+			}
 		}
 	}
 	for typ, dead := range prune {

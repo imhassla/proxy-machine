@@ -38,6 +38,17 @@ func Open(dataSourceName string) (*DB, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("ping sqlite database: %w", err)
 	}
+	// busy_timeout: SetMaxOpenConns(1) stops in-process SQLITE_BUSY, but a SECOND process
+	// (the `scan` subcommand run against the live daemon's DB) can still collide — wait up
+	// to 5s for the lock instead of erroring and dropping the write. WAL lets that reader and
+	// the daemon's writer proceed concurrently. Best-effort: a driver/build lacking either
+	// pragma shouldn't fail startup (WAL is a no-op on :memory:).
+	for _, pragma := range []string{"PRAGMA busy_timeout=5000", "PRAGMA journal_mode=WAL"} {
+		if _, err := conn.Exec(pragma); err != nil {
+			// Non-fatal — log-by-ignore; the DB still works without the tuning.
+			_ = err
+		}
+	}
 	return &DB{conn: conn}, nil
 }
 
