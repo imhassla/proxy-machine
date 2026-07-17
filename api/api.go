@@ -23,11 +23,16 @@ var docsFS embed.FS
 
 // Server is the HTTP API server.
 type Server struct {
-	manager *checker.CheckManager
-	db      *db.DB
-	metrics *metrics.Metrics
-	srv     *http.Server
+	manager     *checker.CheckManager
+	db          *db.DB
+	metrics     *metrics.Metrics
+	upstreamsFn func() any // set via SetUpstreamsProvider; supplies /upstreams data
+	srv         *http.Server
 }
+
+// SetUpstreamsProvider wires a provider (e.g. relay.Server.Upstreams) that supplies the
+// live upstream health snapshot for GET /upstreams. Safe to leave unset (endpoint 404s).
+func (s *Server) SetUpstreamsProvider(fn func() any) { s.upstreamsFn = fn }
 
 // New creates a new Server on the given address. The *http.Server is built here (not in
 // Start), so Stop always has a non-nil server even if a shutdown signal arrives during
@@ -45,6 +50,7 @@ func New(addr string, manager *checker.CheckManager, database *db.DB, m *metrics
 	mux.HandleFunc("/ready", s.handleReady)
 	mux.HandleFunc("/stats", s.handleStats)
 	mux.HandleFunc("/metrics", s.handleMetrics)
+	mux.HandleFunc("/upstreams", s.handleUpstreams)
 	s.srv = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -126,6 +132,22 @@ func (s *Server) proxyCounts() map[string]int {
 		counts[t] = 0
 	}
 	return counts
+}
+
+// handleUpstreams serves the relay's live upstream health snapshot as JSON (addr, type,
+// ewma latency, consecutive fails, circuit state). 404 if no provider is wired.
+func (s *Server) handleUpstreams(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.upstreamsFn == nil {
+		http.Error(w, "upstream stats unavailable", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(s.upstreamsFn())
 }
 
 // handleStats serves a JSON snapshot of validated-proxy counts and relay counters.

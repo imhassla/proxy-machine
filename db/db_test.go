@@ -155,3 +155,63 @@ func TestGetProxiesByTypeInvalidType(t *testing.T) {
 		t.Error("expected error for invalid proxy type, got nil")
 	}
 }
+
+func TestPruneStale(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := d.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StoreProxy("http", "1.1.1.1:80", 0.1, "2020-01-01 00:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StoreProxy("http", "2.2.2.2:80", 0.1, "2030-01-01 00:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := d.PruneStale("2025-01-01 00:00:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned %d, want 1 (only the 2020 row)", n)
+	}
+	got, _ := d.GetProxiesByType("http")
+	if len(got) != 1 || got[0] != "2.2.2.2:80" {
+		t.Fatalf("after prune got %v, want [2.2.2.2:80]", got)
+	}
+}
+
+func TestHealthPersistence(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	in := []HealthRow{
+		{Addr: "http://1.1.1.1:80", EWMA: 0.42, HasData: true, Fails: 0},
+		{Addr: "socks5://2.2.2.2:1080", EWMA: 0, HasData: false, Fails: 3},
+	}
+	if err := d.SaveHealth(in); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.LoadHealth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("loaded %d rows, want 2", len(got))
+	}
+	m := map[string]HealthRow{}
+	for _, r := range got {
+		m[r.Addr] = r
+	}
+	if r := m["http://1.1.1.1:80"]; r.EWMA != 0.42 || !r.HasData || r.Fails != 0 {
+		t.Fatalf("row1 round-trip wrong: %+v", r)
+	}
+	if r := m["socks5://2.2.2.2:1080"]; r.HasData || r.Fails != 3 {
+		t.Fatalf("row2 round-trip wrong: %+v", r)
+	}
+}

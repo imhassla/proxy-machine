@@ -69,6 +69,41 @@ func (h *health) report(addr string, ok bool, latency time.Duration) {
 	}
 }
 
+// healthEntry is a point-in-time view of one upstream's health (for /upstreams).
+type healthEntry struct {
+	addr    string
+	ewma    float64
+	hasData bool
+	fails   int
+	open    bool
+}
+
+// load warms the health map from persisted entries (across a restart). openUntil is
+// reconstructed from the fail count so a previously-tripped circuit stays demoted.
+func (h *health) load(ents []healthEntry, now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, e := range ents {
+		st := &stat{ewma: e.ewma, hasData: e.hasData, fails: e.fails}
+		if e.fails >= failThreshold {
+			st.openUntil = now.Add(circuitCooldown)
+		}
+		h.m[e.addr] = st
+	}
+}
+
+// entries returns a snapshot of every tracked upstream's health.
+func (h *health) entries() []healthEntry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := h.now()
+	out := make([]healthEntry, 0, len(h.m))
+	for addr, s := range h.m {
+		out = append(out, healthEntry{addr: addr, ewma: s.ewma, hasData: s.hasData, fails: s.fails, open: s.openUntil.After(now)})
+	}
+	return out
+}
+
 // retain drops health entries whose addr is not in keep, so the map can't grow unbounded as
 // free-proxy addresses churn. Called on each selector refresh with the live candidate set.
 func (h *health) retain(keep map[string]struct{}) {

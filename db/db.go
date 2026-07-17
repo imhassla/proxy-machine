@@ -182,6 +182,27 @@ func (d *DB) GetProxyRows(proxyType string) ([]ProxyRow, error) {
 	return out, nil
 }
 
+// PruneStale deletes proxies across all per-type tables whose last_checked is older than
+// cutoff (a "2006-01-02 15:04:05" UTC string — lexicographically sortable, so a string
+// comparison is a time comparison). Bounds table growth (and thus per-cycle recheck cost)
+// over long uptime. Returns the number of rows removed.
+func (d *DB) PruneStale(cutoff string) (int, error) {
+	if d.conn == nil {
+		return 0, fmt.Errorf("database connection is nil")
+	}
+	var total int
+	for table := range allowedTypes {
+		res, err := d.conn.Exec(fmt.Sprintf("DELETE FROM %s WHERE last_checked < ?", table), cutoff)
+		if err != nil {
+			return total, fmt.Errorf("prune %s: %w", table, err)
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			total += int(n)
+		}
+	}
+	return total, nil
+}
+
 // DeleteProxies removes the given proxies from a type's table (pruning dead proxies).
 // A nil/empty list is a no-op.
 func (d *DB) DeleteProxies(proxyType string, proxies []string) error {
@@ -235,6 +256,95 @@ func (d *DB) deleteFrom(table, column string, values []string) error {
 func validateProxyType(proxyType string) error {
 	if _, ok := allowedTypes[proxyType]; !ok {
 		return fmt.Errorf("invalid proxy type: %q", proxyType)
+	}
+	return nil
+}
+
+// HealthRow persists one upstream's relay health across restarts.
+type HealthRow struct {
+	Addr    string // "type://addr"
+	EWMA    float64
+	HasData bool
+	Fails   int
+}
+
+// EnsureHealthTable creates the _relay_health table if it does not exist.
+func (d *DB) EnsureHealthTable() error {
+	if d.conn == nil {
+		return fmt.Errorf("database connection is nil")
+	}
+	_, err := d.conn.Exec(`CREATE TABLE IF NOT EXISTS _relay_health (
+		addr TEXT PRIMARY KEY,
+		ewma REAL,
+		has_data INTEGER,
+		fails INTEGER
+	)`)
+	if err != nil {
+		return fmt.Errorf("create relay health table: %w", err)
+	}
+	return nil
+}
+
+// LoadHealth returns all persisted upstream health rows (empty if the table is absent).
+func (d *DB) LoadHealth() ([]HealthRow, error) {
+	if d.conn == nil {
+		return nil, fmt.Errorf("database connection is nil")
+	}
+	if err := d.EnsureHealthTable(); err != nil {
+		return nil, err
+	}
+	rows, err := d.conn.Query("SELECT addr, ewma, has_data, fails FROM _relay_health")
+	if err != nil {
+		return nil, fmt.Errorf("select relay health: %w", err)
+	}
+	defer rows.Close()
+	var out []HealthRow
+	for rows.Next() {
+		var r HealthRow
+		var hasData int
+		if err := rows.Scan(&r.Addr, &r.EWMA, &hasData, &r.Fails); err != nil {
+			return nil, fmt.Errorf("scan relay health: %w", err)
+		}
+		r.HasData = hasData != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SaveHealth replaces the persisted health snapshot with the given rows (one transaction).
+func (d *DB) SaveHealth(rows []HealthRow) error {
+	if d.conn == nil {
+		return fmt.Errorf("database connection is nil")
+	}
+	if err := d.EnsureHealthTable(); err != nil {
+		return err
+	}
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM _relay_health"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("clear relay health: %w", err)
+	}
+	stmt, err := tx.Prepare("INSERT OR REPLACE INTO _relay_health (addr, ewma, has_data, fails) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("prepare relay health insert: %w", err)
+	}
+	defer stmt.Close()
+	for _, r := range rows {
+		hasData := 0
+		if r.HasData {
+			hasData = 1
+		}
+		if _, err := stmt.Exec(r.Addr, r.EWMA, hasData, r.Fails); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("insert relay health %q: %w", r.Addr, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit relay health: %w", err)
 	}
 	return nil
 }

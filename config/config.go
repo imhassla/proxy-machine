@@ -31,6 +31,10 @@ type Config struct {
 	// stored proxies, validate fresh scan results / public lists, prune dead).
 	CheckInterval time.Duration
 
+	// MaxProxyAge drops stored proxies not successfully re-validated within this window,
+	// bounding table growth (and per-cycle recheck cost) over long uptime. 0 disables.
+	MaxProxyAge time.Duration
+
 	// RelayAddr / APIAddr / SocksAddr are the listen addresses. Default to LOOPBACK so a
 	// fresh install is not an open proxy / open API exposed to the network. SocksAddr is
 	// the client-facing SOCKS5 listener (empty → disabled).
@@ -73,11 +77,12 @@ func Load(args []string) (*Config, error) {
 		SocksAddr:      "127.0.0.1:1080",
 		MaxFailover:    5,
 		StickyTTL:      10 * time.Minute,
+		MaxProxyAge:    24 * time.Hour,
 	}
 
 	var configPath string
 	var workers, maxFailover int
-	var timeout, checkInterval, stickyTTL, connectTimeout time.Duration
+	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge time.Duration
 	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
@@ -86,6 +91,7 @@ func Load(args []string) (*Config, error) {
 	fs.DurationVar(&timeout, "timeout", -1, "Timeout duration")
 	fs.DurationVar(&connectTimeout, "connectTimeout", -1, "Per-proxy connect timeout (default 5s)")
 	fs.DurationVar(&checkInterval, "checkInterval", -1, "Background re-check interval")
+	fs.DurationVar(&maxProxyAge, "maxProxyAge", -1, "Drop proxies not revalidated within this window (default 24h; 0 disables)")
 	fs.StringVar(&dbPath, "dbPath", "", "Path to database file")
 	fs.StringVar(&relayAddr, "relayAddr", "", "HTTP relay listen address (default 127.0.0.1:3333)")
 	fs.StringVar(&apiAddr, "apiAddr", "", "API listen address (default 127.0.0.1:8000)")
@@ -118,6 +124,9 @@ func Load(args []string) (*Config, error) {
 	}
 	if checkInterval >= 0 {
 		cfg.CheckInterval = checkInterval
+	}
+	if maxProxyAge >= 0 {
+		cfg.MaxProxyAge = maxProxyAge
 	}
 	if dbPath != "" {
 		cfg.DBPath = dbPath
@@ -180,6 +189,7 @@ type fileConfig struct {
 	ConnectTimeout *string   `json:"connectTimeout"`
 	DBPath         *string   `json:"dbPath"`
 	CheckInterval  *string   `json:"checkInterval"`
+	MaxProxyAge    *string   `json:"maxProxyAge"`
 	RelayAddr      *string   `json:"relayAddr"`
 	APIAddr        *string   `json:"apiAddr"`
 	SocksAddr      *string   `json:"socksAddr"`
@@ -262,6 +272,10 @@ func loadINI(data []byte, cfg *Config) error {
 		case "checkinterval":
 			if fc.CheckInterval == nil {
 				fc.CheckInterval = &val
+			}
+		case "maxproxyage":
+			if fc.MaxProxyAge == nil {
+				fc.MaxProxyAge = &val
 			}
 		case "relayaddr":
 			if fc.RelayAddr == nil {
@@ -376,6 +390,13 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 	}
 	if fc.Sources != nil {
 		cfg.Sources = *fc.Sources
+	}
+	if fc.MaxProxyAge != nil {
+		d, err := time.ParseDuration(*fc.MaxProxyAge)
+		if err != nil {
+			return fmt.Errorf("invalid maxProxyAge value %q: %w", *fc.MaxProxyAge, err)
+		}
+		cfg.MaxProxyAge = d
 	}
 	if fc.ProxyUser != nil {
 		cfg.ProxyUser = *fc.ProxyUser

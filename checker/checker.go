@@ -253,6 +253,17 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 	// (mirrors checker.py -scan clearing _scan_results) regardless of outcome.
 	cm.deleteScanResults(scanIPs)
 
+	// Retention: drop proxies not successfully re-validated within MaxProxyAge, bounding
+	// table growth (and next cycle's recheck job count) over long uptime.
+	if cm.db != nil && cm.cfg.MaxProxyAge > 0 {
+		cutoff := time.Now().UTC().Add(-cm.cfg.MaxProxyAge).Format("2006-01-02 15:04:05")
+		if n, err := cm.db.PruneStale(cutoff); err != nil {
+			log.Printf("checker: retention prune failed: %v", err)
+		} else if n > 0 {
+			log.Printf("checker: retention pruned %d proxies older than %s", n, cm.cfg.MaxProxyAge)
+		}
+	}
+
 	cm.refreshCacheFromDB()
 	log.Printf("checker: cycle done in %s: %d/%d validated OK (http=%d https=%d socks4=%d socks5=%d), %d pruned dead",
 		time.Since(start).Round(time.Second), okCount, len(jobs),

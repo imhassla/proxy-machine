@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -104,6 +105,19 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB, m *
 	s.selector = newSelector(psrc, dsrc)
 	s.pool = newTransportPool(timeout)
 
+	// Warm the health tracker from persisted state so a restart doesn't re-learn (and
+	// re-hammer) known-dead upstreams from scratch.
+	if database != nil {
+		if rows, err := database.LoadHealth(); err == nil && len(rows) > 0 {
+			ents := make([]healthEntry, 0, len(rows))
+			for _, r := range rows {
+				ents = append(ents, healthEntry{addr: r.Addr, ewma: r.EWMA, hasData: r.HasData, fails: r.Fails})
+			}
+			s.selector.health.load(ents, time.Now())
+			log.Printf("relay: warmed %d upstream health entries from DB", len(rows))
+		}
+	}
+
 	// Loud warning if this would be an OPEN proxy: bound to a non-loopback address with
 	// no Proxy-Authorization required. The defaults are loopback, so this only fires when
 	// an operator widens the bind without setting credentials.
@@ -138,6 +152,38 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB, m *
 // runs its Start/Stop lifecycle alongside the HTTP relay.
 func (s *Server) Socks() *SocksServer { return s.socks }
 
+// UpstreamStat is one upstream's live health, exposed via the API's /upstreams endpoint.
+type UpstreamStat struct {
+	Addr             string  `json:"addr"`
+	Type             string  `json:"type"`
+	EWMASeconds      float64 `json:"ewma_seconds"`
+	HasData          bool    `json:"has_data"`
+	ConsecutiveFails int     `json:"consecutive_fails"`
+	CircuitOpen      bool    `json:"circuit_open"`
+}
+
+// Upstreams returns the health snapshot for every tracked upstream (those the relay has
+// dialed at least once), sorted by address. Wired into the API's /upstreams handler.
+func (s *Server) Upstreams() []UpstreamStat {
+	ents := s.selector.health.entries()
+	out := make([]UpstreamStat, 0, len(ents))
+	for _, e := range ents {
+		u := proxyURL(e.addr)
+		out = append(out, UpstreamStat{
+			Addr:             u.Host,
+			Type:             u.Scheme,
+			EWMASeconds:      round2(e.ewma),
+			HasData:          e.hasData,
+			ConsecutiveFails: e.fails,
+			CircuitOpen:      e.open,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Addr < out[j].Addr })
+	return out
+}
+
+func round2(f float64) float64 { return float64(int64(f*100+0.5)) / 100 }
+
 // isLoopbackAddr reports whether a listen address binds only the loopback interface.
 // A bare ":port" / "0.0.0.0:port" / a public host counts as non-loopback (reachable).
 func isLoopbackAddr(addr string) bool {
@@ -167,6 +213,7 @@ func (s *Server) Start() error {
 func (s *Server) refreshLoop() {
 	t := time.NewTicker(relayRefreshInterval)
 	defer t.Stop()
+	ticks := 0
 	for {
 		select {
 		case <-s.done:
@@ -179,7 +226,30 @@ func (s *Server) refreshLoop() {
 			if s.sticky != nil {
 				s.sticky.reap()
 			}
+			// Periodically persist health so a restart keeps the circuit/latency signal.
+			if ticks++; ticks%healthFlushEveryTicks == 0 {
+				s.flushHealth()
+			}
 		}
+	}
+}
+
+// healthFlushEveryTicks flushes persisted health every N refresh ticks (~5 min at the 15s
+// refresh cadence) so a crash loses at most that much learning.
+const healthFlushEveryTicks = 20
+
+// flushHealth persists the current upstream health snapshot (no-op without a DB).
+func (s *Server) flushHealth() {
+	if s.db == nil {
+		return
+	}
+	ents := s.selector.health.entries()
+	rows := make([]db.HealthRow, 0, len(ents))
+	for _, e := range ents {
+		rows = append(rows, db.HealthRow{Addr: e.addr, EWMA: e.ewma, HasData: e.hasData, Fails: e.fails})
+	}
+	if err := s.db.SaveHealth(rows); err != nil {
+		log.Printf("relay: flush health: %v", err)
 	}
 }
 
@@ -188,6 +258,7 @@ func (s *Server) refreshLoop() {
 func (s *Server) Stop(ctx context.Context) error {
 	err := s.srv.Shutdown(ctx)
 	s.stopOnce.Do(func() {
+		s.flushHealth() // persist the learned health on graceful shutdown
 		close(s.done)
 		s.pool.close()
 	})

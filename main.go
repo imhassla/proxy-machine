@@ -59,6 +59,8 @@ func runService(args []string) error {
 	met := metrics.New()
 	server := api.New(cfg.APIAddr, manager, database, met)
 	relayServer := relay.New(cfg, manager, database, met)
+	// Expose the relay's live upstream health via GET /upstreams.
+	server.SetUpstreamsProvider(func() any { return relayServer.Upstreams() })
 
 	var checkerErr error
 	checkerDone := make(chan struct{})
