@@ -4,6 +4,7 @@ package checker
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,6 +60,8 @@ var (
 		"https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
 		// http (scheme://ip:port — normalized)
 		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+		// https (typed via getProxyType on the URL path)
+		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
 		// socks5 (typed via getProxyType on the URL)
 		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
 		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
@@ -367,6 +370,13 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
+	// A short connect timeout fails dead proxies fast (so a sweep converges) while the
+	// overall client Timeout still gives a slow-but-alive proxy time to answer.
+	connectTimeout := cm.cfg.ConnectTimeout
+	if connectTimeout <= 0 || connectTimeout > timeout {
+		connectTimeout = timeout
+	}
+	dialer := &net.Dialer{Timeout: connectTimeout}
 	var transport *http.Transport
 	if job.typ == "socks4" {
 		// net/http can't proxy socks4, so dial the test target THROUGH the socks4 proxy and
@@ -374,7 +384,9 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 		addr := job.addr
 		transport = &http.Transport{
 			DialContext: func(ctx context.Context, _, target string) (net.Conn, error) {
-				return socks.Dial4(ctx, addr, target)
+				dctx, cancel := context.WithTimeout(ctx, connectTimeout)
+				defer cancel()
+				return socks.Dial4(dctx, addr, target)
 			},
 		}
 	} else {
@@ -382,7 +394,14 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 		if err != nil {
 			return 0, false
 		}
-		transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+		transport = &http.Transport{Proxy: http.ProxyURL(proxyURL), DialContext: dialer.DialContext}
+		if job.typ == "https" {
+			// An https proxy's own hop is TLS. Free https proxies almost universally present
+			// self-signed/mismatched certs, so verifying that hop would reject them ALL (why
+			// the https pool was always empty). Skip verification here — matches the relay,
+			// which dials https upstreams the same way. (The test URL is a throwaway IP echo.)
+			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		}
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: timeout}
@@ -584,13 +603,21 @@ func normalizeProxyLine(line string) (string, bool) {
 
 func getProxyType(u string) string {
 	lower := strings.ToLower(u)
-	if strings.Contains(lower, "socks4") {
+	// Strip the URL's own scheme first so the "https://" prefix of EVERY source URL doesn't
+	// false-match the https branch — the type is inferred from the path/filename.
+	if i := strings.Index(lower, "://"); i >= 0 {
+		lower = lower[i+3:]
+	}
+	switch {
+	case strings.Contains(lower, "socks4"):
 		return "socks4"
-	}
-	if strings.Contains(lower, "socks5") {
+	case strings.Contains(lower, "socks5"):
 		return "socks5"
+	case strings.Contains(lower, "https"):
+		return "https"
+	default:
+		return "http"
 	}
-	return "http"
 }
 
 // Cache returns a copy of the current in-memory proxy cache grouped by type.

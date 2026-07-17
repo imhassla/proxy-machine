@@ -12,11 +12,14 @@ func TestLoad_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Workers != 4 {
-		t.Errorf("expected Workers=4, got %d", cfg.Workers)
+	if cfg.Workers != 50 {
+		t.Errorf("expected Workers=50, got %d", cfg.Workers)
 	}
 	if cfg.Timeout != 30*time.Second {
 		t.Errorf("expected Timeout=30s, got %v", cfg.Timeout)
+	}
+	if cfg.ConnectTimeout != 5*time.Second {
+		t.Errorf("expected ConnectTimeout=5s, got %v", cfg.ConnectTimeout)
 	}
 	if cfg.DBPath != "data.db" {
 		t.Errorf("expected DBPath=data.db, got %s", cfg.DBPath)
@@ -42,6 +45,28 @@ func TestLoad_JSON(t *testing.T) {
 	}
 	if cfg.DBPath != "test.db" {
 		t.Errorf("expected DBPath=test.db, got %s", cfg.DBPath)
+	}
+}
+
+// socksAddr = "off" in a CONFIG FILE must disable the listener (→ ""), same as the CLI
+// flag — otherwise startup does net.Listen("tcp","off") and crashes. Also checks
+// connectTimeout parses from a file.
+func TestLoad_JSON_SocksOffAndConnectTimeout(t *testing.T) {
+	dir := t.TempDir()
+	jsonFile := filepath.Join(dir, "config.json")
+	content := `{"socksAddr": "off", "connectTimeout": "3s"}`
+	if err := os.WriteFile(jsonFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	cfg, err := Load([]string{"-config", jsonFile})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SocksAddr != "" {
+		t.Errorf("socksAddr=off should disable the listener (\"\"), got %q", cfg.SocksAddr)
+	}
+	if cfg.ConnectTimeout != 3*time.Second {
+		t.Errorf("expected ConnectTimeout=3s, got %v", cfg.ConnectTimeout)
 	}
 }
 

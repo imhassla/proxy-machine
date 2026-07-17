@@ -1,12 +1,15 @@
 package relay
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"proxymachine/pkg/socks"
 )
 
 type transportPool struct {
@@ -52,8 +55,8 @@ func (p *transportPool) get(target string) *http.Client {
 		return client
 	}
 
+	u := proxyURL(target)
 	transport := &http.Transport{
-		Proxy: http.ProxyURL(proxyURL(target)),
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
 			KeepAlive: p.keepAlive,
@@ -62,6 +65,18 @@ func (p *transportPool) get(target string) *http.Client {
 		MaxIdleConnsPerHost: p.maxIdle,
 		IdleConnTimeout:     90 * time.Second,
 		ForceAttemptHTTP2:   false,
+	}
+	if u.Scheme == "socks4" {
+		// net/http.Transport.Proxy supports http/https/socks5 but NOT socks4. For a socks4
+		// upstream, dial the request's target THROUGH the socks4 proxy ourselves (socks4a
+		// resolves hostnames) instead of setting Proxy — otherwise every socks4 candidate on
+		// the plaintext-HTTP relay path would fail and burn the failover budget.
+		proxyHost := u.Host
+		transport.DialContext = func(ctx context.Context, _, target string) (net.Conn, error) {
+			return socks.Dial4(ctx, proxyHost, target)
+		}
+	} else {
+		transport.Proxy = http.ProxyURL(u)
 	}
 
 	client := &http.Client{

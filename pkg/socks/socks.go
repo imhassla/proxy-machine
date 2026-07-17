@@ -26,7 +26,9 @@ func Dial4(ctx context.Context, proxyAddr, target string) (net.Conn, error) {
 }
 
 func dial(ctx context.Context, proxyAddr, target string, handshake func(net.Conn, string) error) (net.Conn, error) {
-	d := &net.Dialer{}
+	// KeepAlive lets the OS detect a silently-dead SOCKS proxy/peer so a stalled tunnel's
+	// Read eventually errors instead of blocking forever.
+	d := &net.Dialer{KeepAlive: 30 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, fmt.Errorf("dial socks proxy %s: %w", proxyAddr, err)

@@ -146,6 +146,36 @@ func TestDialUpstreamSocks5(t *testing.T) {
 	assertEcho(t, conn)
 }
 
+// A socks4 upstream must also work on the PLAINTEXT-HTTP relay path (not just CONNECT):
+// net/http can't proxy socks4, so the pool dials the target through it via a custom
+// DialContext. Without the fix a socks4 candidate here always 502s.
+func TestRelaySocks4HTTPForward(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "OK4")
+	}))
+	defer origin.Close()
+
+	socks4Up := startSocks4Upstream(t)
+	s := relayWithUpstreams(t, map[string][]string{"socks4": {socks4Up}})
+	relayTS := httptest.NewServer(s.srv.Handler)
+	defer relayTS.Close()
+
+	proxyURL, _ := url.Parse(relayTS.URL)
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+	}
+	resp, err := client.Get(origin.URL)
+	if err != nil {
+		t.Fatalf("HTTP forward through socks4: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "OK4" {
+		t.Fatalf("body = %q, want OK4", body)
+	}
+}
+
 func TestDialUpstreamSocks4(t *testing.T) {
 	echo := startEcho(t)
 	socks4Up := startSocks4Upstream(t)

@@ -53,8 +53,11 @@ func LoadOptions(args []string) (*Options, error) {
 		return nil, err
 	}
 
+	// Timeout/DBPath are inherited from config defaults, but NOT Workers: the checker's
+	// worker default is tuned for high-throughput validation, whereas port scanning should
+	// stay gentle (and anonymous, through few socks4 proxies). The scanner keeps its own
+	// modest default (applied by the <=0 floor below).
 	opts := &Options{
-		Workers: base.Workers,
 		Timeout: base.Timeout,
 		DBPath:  base.DBPath,
 	}

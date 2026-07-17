@@ -60,8 +60,9 @@ form accepts a `[database] path = …` section key.
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--dbPath` | `data.db` | SQLite path |
-| `--workers` | `4` | validation worker pool size |
-| `--timeout` | `30s` | per-request timeout (list/IP fetch and per-proxy check) |
+| `--workers` | `50` | validation worker pool size |
+| `--timeout` | `30s` | total per-proxy validation timeout (list/IP fetch and per-proxy check) |
+| `--connectTimeout` | `5s` | connect (+SOCKS handshake) timeout per proxy — dead proxies fail fast |
 | `--checkInterval` | `60s` | background re-validation cadence |
 | `--relayAddr` | `127.0.0.1:3333` | HTTP relay bind (forwards HTTP + tunnels HTTPS via CONNECT) |
 | `--apiAddr` | `127.0.0.1:8000` | API bind |

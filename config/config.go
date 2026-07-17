@@ -20,7 +20,12 @@ import (
 type Config struct {
 	Workers int
 	Timeout time.Duration
-	DBPath  string
+	// ConnectTimeout bounds just the TCP connect (+ SOCKS handshake) to a candidate proxy,
+	// separately from Timeout (the whole per-proxy validation). A short connect timeout lets
+	// dead proxies fail fast so a sweep converges, while a slow-but-alive proxy still gets
+	// the full Timeout to answer.
+	ConnectTimeout time.Duration
+	DBPath         string
 
 	// CheckInterval is the cadence of the background re-validation loop (re-check
 	// stored proxies, validate fresh scan results / public lists, prune dead).
@@ -54,26 +59,28 @@ type Config struct {
 // args should typically be os.Args[1:].
 func Load(args []string) (*Config, error) {
 	cfg := &Config{
-		Workers:       4,
-		Timeout:       30 * time.Second,
-		DBPath:        "data.db",
-		CheckInterval: 60 * time.Second,
-		RelayAddr:     "127.0.0.1:3333",
-		APIAddr:       "127.0.0.1:8000",
-		SocksAddr:     "127.0.0.1:1080",
-		MaxFailover:   5,
-		StickyTTL:     10 * time.Minute,
+		Workers:        50,
+		Timeout:        30 * time.Second,
+		ConnectTimeout: 5 * time.Second,
+		DBPath:         "data.db",
+		CheckInterval:  60 * time.Second,
+		RelayAddr:      "127.0.0.1:3333",
+		APIAddr:        "127.0.0.1:8000",
+		SocksAddr:      "127.0.0.1:1080",
+		MaxFailover:    5,
+		StickyTTL:      10 * time.Minute,
 	}
 
 	var configPath string
 	var workers, maxFailover int
-	var timeout, checkInterval, stickyTTL time.Duration
+	var timeout, checkInterval, stickyTTL, connectTimeout time.Duration
 	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
 	fs.IntVar(&workers, "workers", -1, "Number of workers")
 	fs.DurationVar(&timeout, "timeout", -1, "Timeout duration")
+	fs.DurationVar(&connectTimeout, "connectTimeout", -1, "Per-proxy connect timeout (default 5s)")
 	fs.DurationVar(&checkInterval, "checkInterval", -1, "Background re-check interval")
 	fs.StringVar(&dbPath, "dbPath", "", "Path to database file")
 	fs.StringVar(&relayAddr, "relayAddr", "", "HTTP relay listen address (default 127.0.0.1:3333)")
@@ -100,6 +107,9 @@ func Load(args []string) (*Config, error) {
 	}
 	if timeout >= 0 {
 		cfg.Timeout = timeout
+	}
+	if connectTimeout >= 0 {
+		cfg.ConnectTimeout = connectTimeout
 	}
 	if checkInterval >= 0 {
 		cfg.CheckInterval = checkInterval
@@ -157,18 +167,19 @@ func loadFile(path string, cfg *Config) error {
 }
 
 type fileConfig struct {
-	Workers       *int    `json:"workers"`
-	Timeout       *string `json:"timeout"`
-	DBPath        *string `json:"dbPath"`
-	CheckInterval *string `json:"checkInterval"`
-	RelayAddr     *string `json:"relayAddr"`
-	APIAddr       *string `json:"apiAddr"`
-	SocksAddr     *string `json:"socksAddr"`
-	MaxFailover   *int    `json:"maxFailover"`
-	StickyHeader  *string `json:"stickyHeader"`
-	StickyTTL     *string `json:"stickyTTL"`
-	ProxyUser     *string `json:"proxyUser"`
-	ProxyPass     *string `json:"proxyPass"`
+	Workers        *int    `json:"workers"`
+	Timeout        *string `json:"timeout"`
+	ConnectTimeout *string `json:"connectTimeout"`
+	DBPath         *string `json:"dbPath"`
+	CheckInterval  *string `json:"checkInterval"`
+	RelayAddr      *string `json:"relayAddr"`
+	APIAddr        *string `json:"apiAddr"`
+	SocksAddr      *string `json:"socksAddr"`
+	MaxFailover    *int    `json:"maxFailover"`
+	StickyHeader   *string `json:"stickyHeader"`
+	StickyTTL      *string `json:"stickyTTL"`
+	ProxyUser      *string `json:"proxyUser"`
+	ProxyPass      *string `json:"proxyPass"`
 }
 
 func loadJSON(data []byte, cfg *Config) error {
@@ -219,6 +230,10 @@ func loadINI(data []byte, cfg *Config) error {
 		case "timeout":
 			if fc.Timeout == nil {
 				fc.Timeout = &val
+			}
+		case "connecttimeout":
+			if fc.ConnectTimeout == nil {
+				fc.ConnectTimeout = &val
 			}
 		case "dbpath", "db.path":
 			if fc.DBPath == nil {
@@ -286,6 +301,13 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 		}
 		cfg.Timeout = d
 	}
+	if fc.ConnectTimeout != nil {
+		d, err := time.ParseDuration(*fc.ConnectTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid connectTimeout value %q: %w", *fc.ConnectTimeout, err)
+		}
+		cfg.ConnectTimeout = d
+	}
 	if fc.DBPath != nil {
 		cfg.DBPath = *fc.DBPath
 	}
@@ -303,7 +325,13 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 		cfg.APIAddr = *fc.APIAddr
 	}
 	if fc.SocksAddr != nil {
-		cfg.SocksAddr = *fc.SocksAddr
+		// Same off/none → "" (disabled) normalization the CLI flag gets, so disabling the
+		// SOCKS listener via a config file doesn't become net.Listen("tcp","off") at startup.
+		if *fc.SocksAddr == "off" || *fc.SocksAddr == "none" {
+			cfg.SocksAddr = ""
+		} else {
+			cfg.SocksAddr = *fc.SocksAddr
+		}
 	}
 	if fc.MaxFailover != nil {
 		if *fc.MaxFailover < 0 {

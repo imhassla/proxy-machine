@@ -36,8 +36,9 @@ func dialUpstream(ctx context.Context, candidate, target string, timeout time.Du
 		return socks.Dial4(dctx, u.Host, target)
 	}
 
-	// http/https upstreams: dial the proxy, then HTTP CONNECT to the target.
-	d := &net.Dialer{}
+	// http/https upstreams: dial the proxy, then HTTP CONNECT to the target. KeepAlive lets
+	// the OS detect a silently-dead peer so a stalled tunnel's Read eventually errors out.
+	d := &net.Dialer{KeepAlive: 30 * time.Second}
 	conn, err := d.DialContext(dctx, "tcp", u.Host)
 	if err != nil {
 		return nil, fmt.Errorf("dial upstream %s: %w", u.Host, err)
@@ -110,12 +111,33 @@ type prefixConn struct {
 
 func (p *prefixConn) Read(b []byte) (int, error) { return p.r.Read(b) }
 
-// pipe copies bytes bidirectionally between two conns until either side closes/errs, then
-// tears both down. Used for client CONNECT tunnels and SOCKS5 relays.
+// tunnelIdleTimeout tears down a tunnel that has been completely silent (no bytes either
+// direction) for this long — a backstop so a half-dead tunnel (peer vanished without a
+// FIN/RST) can't hold two fds + two goroutines forever. The deadline resets on any traffic.
+const tunnelIdleTimeout = 5 * time.Minute
+
+// pipe copies bytes bidirectionally between two conns until either side closes/errs or the
+// tunnel goes idle past tunnelIdleTimeout, then tears both down. Used for client CONNECT
+// tunnels and SOCKS relays.
 func pipe(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
+		buf := make([]byte, 32*1024)
+		for {
+			// Reset the idle deadline on each read; a fully-silent tunnel trips it and
+			// unblocks, preventing an indefinite fd/goroutine leak on a dead peer.
+			_ = src.SetReadDeadline(time.Now().Add(tunnelIdleTimeout))
+			n, rerr := src.Read(buf)
+			if n > 0 {
+				_ = dst.SetWriteDeadline(time.Now().Add(tunnelIdleTimeout))
+				if _, werr := dst.Write(buf[:n]); werr != nil {
+					break
+				}
+			}
+			if rerr != nil {
+				break
+			}
+		}
 		// Unblock the other direction: a deadline in the past collapses the peer's Read.
 		_ = dst.SetDeadline(time.Now())
 		done <- struct{}{}

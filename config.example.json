@@ -1,7 +1,8 @@
 {
   "dbPath": "data.db",
-  "workers": 4,
+  "workers": 50,
   "timeout": "30s",
+  "connectTimeout": "5s",
   "checkInterval": "60s",
 
   "apiAddr": "127.0.0.1:8000",

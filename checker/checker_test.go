@@ -250,6 +250,15 @@ func TestGetProxyTypeOfConfiguredSources(t *testing.T) {
 			t.Errorf("getProxyType(%q) = %q, want socks4", u, got)
 		}
 	}
+	// https typing must key off the path, not the "https://" scheme of every source URL.
+	wantHTTPS := []string{
+		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
+	}
+	for _, u := range wantHTTPS {
+		if got := getProxyType(u); got != "https" {
+			t.Errorf("getProxyType(%q) = %q, want https", u, got)
+		}
+	}
 	// Every configured type must be one the checker actually validates (testableTypes),
 	// so no source is fetched then discarded.
 	for _, u := range publicProxyURLs {
