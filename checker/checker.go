@@ -44,10 +44,14 @@ var (
 		"https://ifconfig.me/ip",
 		"https://httpbin.org/ip",
 	}
+	// httpbin.org/get is FIRST because it reflects the request HEADERS the target saw,
+	// which is what lets us classify anonymity (elite/anonymous/transparent). The plain
+	// IP-echoes are fallbacks (origin only → tier left unknown) for when httpbin is
+	// rate-limited/down.
 	proxyTestURLs = []string{
+		"https://httpbin.org/get",
 		"https://api.ipify.org",
 		"https://checkip.amazonaws.com",
-		"https://httpbin.org/ip",
 	}
 	// publicProxyURLs are re-verified public lists (live + substantial + maintained as of
 	// 2026-06). Each source's TYPE is inferred from its URL by getProxyType. The checker
@@ -99,9 +103,10 @@ type proxyJob struct {
 }
 
 type checkResult struct {
-	job proxyJob
-	rt  float64
-	ok  bool
+	job  proxyJob
+	rt   float64
+	anon string
+	ok   bool
 }
 
 // pruneThreshold is how many CONSECUTIVE failed rechecks a stored proxy must accumulate
@@ -226,7 +231,7 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 				// a cycle-start timestamp would already be stale and get filtered by the
 				// API's default age window.
 				now := time.Now().UTC().Format("2006-01-02 15:04:05")
-				if err := cm.db.StoreProxy(r.job.typ, r.job.addr, round2(r.rt), now); err != nil {
+				if err := cm.db.StoreProxyTier(r.job.typ, r.job.addr, round2(r.rt), now, r.anon); err != nil {
 					log.Printf("checker: store %s %s: %v", r.job.typ, r.job.addr, err)
 				}
 			}
@@ -345,9 +350,9 @@ func (cm *CheckManager) validateStream(ctx context.Context, sip string, jobs []p
 		go func() {
 			defer wg.Done()
 			for job := range in {
-				rt, ok := cm.check(ctx, sip, job)
+				rt, anon, ok := cm.check(ctx, sip, job)
 				select {
-				case out <- checkResult{job: job, rt: rt, ok: ok}:
+				case out <- checkResult{job: job, rt: rt, anon: anon, ok: ok}:
 				case <-ctx.Done():
 					return
 				}
@@ -378,25 +383,75 @@ func setHeaders(req *http.Request) {
 	req.Header.Set("Accept", "*/*")
 }
 
-// parseOrigin extracts the echoed origin from an IP-echo response body: JSON
-// ({"origin":…} httpbin, or {"ip":…} ipify/myip) or a bare plaintext IP (icanhazip,
-// ifconfig.me, ipify text). httpbin's origin may be a comma-joined X-Forwarded-For chain.
-func parseOrigin(body []byte) string {
+// ipResult is a parsed IP-echo response: the origin the target saw (possibly a comma-joined
+// X-Forwarded-For chain) and, for header-reflecting endpoints (httpbin /get), the request
+// headers the target received — which drive anonymity classification.
+type ipResult struct {
+	origin     string
+	headers    map[string]string
+	hasHeaders bool
+}
+
+// parseIPResult extracts origin (+ headers, when present) from an IP-echo body: JSON
+// ({"origin"/"ip":…, "headers":{…}} httpbin) or a bare plaintext IP (icanhazip/ipify text).
+func parseIPResult(body []byte) ipResult {
 	t := strings.TrimSpace(string(body))
 	if strings.HasPrefix(t, "{") {
 		var r struct {
-			Origin string `json:"origin"`
-			IP     string `json:"ip"`
+			Origin  string            `json:"origin"`
+			IP      string            `json:"ip"`
+			Headers map[string]string `json:"headers"`
 		}
-		if json.Unmarshal([]byte(t), &r) == nil {
-			if r.Origin != "" {
-				return r.Origin
-			}
-			return r.IP
+		if json.Unmarshal([]byte(t), &r) != nil {
+			return ipResult{}
 		}
-		return ""
+		origin := r.Origin
+		if origin == "" {
+			origin = r.IP
+		}
+		return ipResult{origin: origin, headers: r.Headers, hasHeaders: r.Headers != nil}
 	}
-	return t
+	return ipResult{origin: t}
+}
+
+// proxyRevealingHeaders are request headers whose presence (as seen by the target) reveals
+// that the connection came through a proxy — the difference between an "anonymous" and an
+// "elite" (high-anon) proxy.
+var proxyRevealingHeaders = map[string]struct{}{
+	"via": {}, "x-forwarded-for": {}, "x-forwarded": {}, "forwarded": {},
+	"x-real-ip": {}, "client-ip": {}, "x-client-ip": {}, "x-proxy-id": {},
+	"proxy-connection": {}, "x-forwarded-host": {}, "x-forwarded-proto": {},
+}
+
+// classifyAnon decides a proxy's anonymity from what the target saw. leaked=true means our
+// real IP appeared (origin chain or a header) → transparent → the proxy must be REJECTED.
+// Otherwise the tier is "elite" (no proxy-revealing headers) or "anonymous" (some present),
+// or "" when the endpoint didn't reflect headers (unknown, but still anonymous by origin).
+func classifyAnon(sip string, res ipResult) (tier string, leaked bool) {
+	for _, o := range strings.Split(res.origin, ",") {
+		if strings.TrimSpace(o) == sip {
+			leaked = true
+		}
+	}
+	if !res.hasHeaders {
+		return "", leaked
+	}
+	revealing := false
+	for name, val := range res.headers {
+		if _, ok := proxyRevealingHeaders[strings.ToLower(strings.TrimSpace(name))]; ok {
+			revealing = true
+		}
+		if strings.Contains(val, sip) {
+			leaked = true
+		}
+	}
+	if leaked {
+		return "transparent", true
+	}
+	if revealing {
+		return "anonymous", false
+	}
+	return "elite", false
 }
 
 // check validates one proxy by requesting a test URL through it and confirming the returned
@@ -405,9 +460,9 @@ func parseOrigin(body []byte) string {
 // failing over on an endpoint-level error (e.g. 503) but treating a TRANSPORT error as a
 // dead proxy (no point trying other endpoints through it). Closes idle connections so a
 // full sweep doesn't leak a transport/fd per proxy.
-func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (float64, bool) {
+func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (float64, string, bool) {
 	if sip == "" {
-		return 0, false
+		return 0, "", false
 	}
 	timeout := cm.cfg.Timeout
 	if timeout <= 0 {
@@ -435,7 +490,7 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 	} else {
 		proxyURL, err := url.Parse(job.typ + "://" + job.addr)
 		if err != nil {
-			return 0, false
+			return 0, "", false
 		}
 		transport = &http.Transport{Proxy: http.ProxyURL(proxyURL), DialContext: dialer.DialContext}
 		if job.typ == "https" {
@@ -460,7 +515,7 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 		if err != nil {
 			// Transport error → the PROXY failed (unreachable/refused/timeout), not the
 			// endpoint; other endpoints won't fare better through a dead proxy.
-			return 0, false
+			return 0, "", false
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 		rt := time.Since(start).Seconds()
@@ -468,20 +523,20 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 		if resp.StatusCode != http.StatusOK {
 			continue // endpoint problem (e.g. 503) — try the next test URL through this proxy
 		}
-		origin := parseOrigin(body)
-		if origin == "" {
+		res := parseIPResult(body)
+		if res.origin == "" {
 			continue
 		}
-		// Reject if ANY origin component is our own IP (a transparent proxy leaking the
-		// client IP via X-Forwarded-For shows up as a "<self>, <proxy>" chain on httpbin).
-		for _, o := range strings.Split(origin, ",") {
-			if strings.TrimSpace(o) == sip {
-				return 0, false
-			}
+		// Classify anonymity. A leak (our IP in the origin chain OR any reflected header)
+		// means transparent → reject; otherwise keep, tagged elite/anonymous (or "" when the
+		// endpoint didn't reflect headers).
+		tier, leaked := classifyAnon(sip, res)
+		if leaked {
+			return 0, "", false
 		}
-		return rt, true
+		return rt, tier, true
 	}
-	return 0, false
+	return 0, "", false
 }
 
 // refreshCacheFromDB rebuilds the in-memory cache (read by the relay selector and the
@@ -547,7 +602,7 @@ func (cm *CheckManager) fetchSelfIP(ctx context.Context, url string) (string, er
 	}
 	// Directly (not through a proxy) the origin is just our IP; take the first component
 	// and validate it parses as an IP.
-	first := strings.TrimSpace(strings.Split(parseOrigin(body), ",")[0])
+	first := strings.TrimSpace(strings.Split(parseIPResult(body).origin, ",")[0])
 	if net.ParseIP(first) == nil {
 		return "", fmt.Errorf("unparseable IP %q", first)
 	}

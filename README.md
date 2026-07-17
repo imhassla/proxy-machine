@@ -105,7 +105,11 @@ them via `CONNECT` (see `checker/https_smoke_test.go` for the proof).
 
 - `time` — max response time in **seconds** (float), e.g. `?time=1.5`
 - `minutes` — max age since last check (default `30`; `0` disables)
-- `format` — `json` (array of `{proxy,response_time,last_checked}`, fastest first) or `text`
+- `anon` — anonymity tier filter: `elite` (no proxy-revealing headers), `anonymous`
+  (proxy detectable but your IP hidden), or `unknown` (validated but not classified —
+  the header-reflecting endpoint wasn't reached). Transparent proxies (that leak your IP)
+  are never stored. Empty = any tier.
+- `format` — `json` (array of `{proxy,response_time,last_checked,anon}`, fastest first) or `text`
 
 An empty match is `200` with an empty body. `GET /` serves HTML docs. Probes: `GET /health`
 → `ok` (liveness, always 200); `GET /ready` → `200` once ≥1 validated upstream exists, else
@@ -113,7 +117,9 @@ An empty match is `200` with an empty body. `GET /` serves HTML docs. Probes: `G
 
 Observability: `GET /stats` returns JSON `{proxies:{<type>:count}, relay:{…counters}}`;
 `GET /metrics` returns the same in Prometheus text format (`proxymachine_proxies`,
-`proxymachine_relay_requests_total`, `…_failures_total`, `…_upstream_attempts_total`).
+`proxymachine_relay_requests_total`, `…_failures_total`, `…_upstream_attempts_total`);
+`GET /upstreams` lists each relay upstream's live health (ewma latency, consecutive fails,
+circuit state); `GET /ready` gates on ≥1 validated upstream.
 
 ## Security defaults
 

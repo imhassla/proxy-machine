@@ -355,3 +355,27 @@ func TestCheckManager_PrunesDeadStoredEvenIfReappears(t *testing.T) {
 		t.Errorf("dead proxy present on both DB and public list was not pruned: %v", stored)
 	}
 }
+
+func TestClassifyAnon(t *testing.T) {
+	const sip = "1.2.3.4"
+	cases := []struct {
+		name       string
+		res        ipResult
+		wantTier   string
+		wantLeaked bool
+	}{
+		{"no headers → unknown, not leaked", ipResult{origin: "9.9.9.9"}, "", false},
+		{"origin chain leaks self → transparent", ipResult{origin: "1.2.3.4, 9.9.9.9"}, "", true},
+		{"headers, no proxy markers → elite", ipResult{origin: "9.9.9.9", headers: map[string]string{"Host": "x", "User-Agent": "y"}, hasHeaders: true}, "elite", false},
+		{"headers with Via → anonymous", ipResult{origin: "9.9.9.9", headers: map[string]string{"Via": "1.1 proxy"}, hasHeaders: true}, "anonymous", false},
+		{"header leaks self IP → transparent", ipResult{origin: "9.9.9.9", headers: map[string]string{"X-Forwarded-For": "1.2.3.4"}, hasHeaders: true}, "transparent", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tier, leaked := classifyAnon(sip, c.res)
+			if tier != c.wantTier || leaked != c.wantLeaked {
+				t.Fatalf("classifyAnon = (%q, %v), want (%q, %v)", tier, leaked, c.wantTier, c.wantLeaked)
+			}
+		})
+	}
+}

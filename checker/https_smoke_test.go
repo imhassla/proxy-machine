@@ -70,7 +70,7 @@ func TestHTTPSProxyValidation(t *testing.T) {
 	defer tlsProxy.Close()
 	tlsAddr := strings.TrimPrefix(tlsProxy.URL, "https://")
 
-	rt, ok := cm.check(context.Background(), selfIP, proxyJob{addr: tlsAddr, typ: "https"})
+	rt, _, ok := cm.check(context.Background(), selfIP, proxyJob{addr: tlsAddr, typ: "https"})
 	if !ok {
 		t.Fatalf("a real https (TLS-to-proxy) proxy should validate under type=https, but it FAILED — the https code path is broken")
 	}
@@ -82,7 +82,7 @@ func TestHTTPSProxyValidation(t *testing.T) {
 	defer plainProxy.Close()
 	plainAddr := strings.TrimPrefix(plainProxy.URL, "http://")
 
-	if _, ok := cm.check(context.Background(), selfIP, proxyJob{addr: plainAddr, typ: "https"}); ok {
+	if _, _, ok := cm.check(context.Background(), selfIP, proxyJob{addr: plainAddr, typ: "https"}); ok {
 		t.Fatalf("a plaintext http proxy must NOT validate as https (no TLS server on the proxy hop)")
 	}
 	t.Logf("OK: plaintext proxy correctly REJECTED as https — this is why public 'https' lists (which are plaintext CONNECT proxies) leave /proxy/https empty. Those entries are really http proxies, and http proxies already tunnel HTTPS via CONNECT (the relay does this).")

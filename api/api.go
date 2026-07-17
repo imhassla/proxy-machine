@@ -256,9 +256,15 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("unsupported format: %s", format), http.StatusBadRequest)
 		return
 	}
+	// anon = anonymity tier filter (elite | anonymous | transparent | unknown); empty = any.
+	anon := strings.ToLower(r.URL.Query().Get("anon"))
+	if anon != "" && anon != "elite" && anon != "anonymous" && anon != "transparent" && anon != "unknown" {
+		http.Error(w, fmt.Sprintf("invalid anon: %q (elite|anonymous|transparent|unknown)", anon), http.StatusBadRequest)
+		return
+	}
 
 	// An empty result is 200 with an empty body (a valid "no proxies match"), not 404.
-	rows := s.collectRows(proxyType, maxResp, minutes)
+	rows := s.collectRows(proxyType, maxResp, minutes, anon)
 
 	if format == "json" {
 		w.Header().Set("Content-Type", "application/json")
@@ -280,7 +286,7 @@ const lastCheckedLayout = "2006-01-02 15:04:05"
 // max age, newest validations first. Authoritative source is the DB (it carries the
 // metadata the filters need); when the DB is unavailable it degrades to the relay's
 // in-memory cache (addresses only, so the metadata filters cannot be applied).
-func (s *Server) collectRows(proxyType string, maxResp float64, minutes int) []db.ProxyRow {
+func (s *Server) collectRows(proxyType string, maxResp float64, minutes int, anon string) []db.ProxyRow {
 	if s.db != nil {
 		all, err := s.db.GetProxyRows(proxyType)
 		if err == nil {
@@ -292,6 +298,16 @@ func (s *Server) collectRows(proxyType string, maxResp float64, minutes int) []d
 				}
 				if minutes > 0 {
 					if ts, perr := time.ParseInLocation(lastCheckedLayout, row.LastChecked, time.UTC); perr == nil && ts.Before(cutoff) {
+						continue
+					}
+				}
+				// anon filter: "unknown" matches an empty tier; otherwise exact tier match.
+				if anon != "" {
+					rowTier := row.Anon
+					if rowTier == "" {
+						rowTier = "unknown"
+					}
+					if rowTier != anon {
 						continue
 					}
 				}

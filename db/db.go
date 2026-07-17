@@ -82,25 +82,35 @@ func (d *DB) Init() error {
 			`CREATE TABLE IF NOT EXISTS %s (
 				proxy TEXT PRIMARY KEY,
 				response_time REAL,
-				last_checked TEXT
+				last_checked TEXT,
+				anon TEXT DEFAULT ''
 			)`, table)
 		if _, err := d.conn.Exec(stmt); err != nil {
 			return fmt.Errorf("create table %s: %w", table, err)
 		}
+		// Migrate DBs created before the anon column existed. ALTER errors if the column is
+		// already present (new tables above) — that's expected, so ignore it.
+		_, _ = d.conn.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN anon TEXT DEFAULT ''", table))
 	}
 	return nil
 }
 
-// StoreProxy inserts or updates a proxy row for the given proxy type.
+// StoreProxy inserts or updates a proxy row for the given proxy type (anonymity tier unset).
 func (d *DB) StoreProxy(proxyType string, proxy string, responseTime float64, lastChecked string) error {
+	return d.StoreProxyTier(proxyType, proxy, responseTime, lastChecked, "")
+}
+
+// StoreProxyTier inserts or updates a proxy row including its anonymity tier
+// (elite | anonymous | transparent | "").
+func (d *DB) StoreProxyTier(proxyType string, proxy string, responseTime float64, lastChecked, anon string) error {
 	if err := validateProxyType(proxyType); err != nil {
 		return err
 	}
 	stmt := fmt.Sprintf(
-		`INSERT OR REPLACE INTO %s (proxy, response_time, last_checked) VALUES (?, ?, ?)`,
+		`INSERT OR REPLACE INTO %s (proxy, response_time, last_checked, anon) VALUES (?, ?, ?, ?)`,
 		proxyType,
 	)
-	_, err := d.conn.Exec(stmt, proxy, responseTime, lastChecked)
+	_, err := d.conn.Exec(stmt, proxy, responseTime, lastChecked, anon)
 	if err != nil {
 		return fmt.Errorf("store proxy in %s: %w", proxyType, err)
 	}
@@ -154,6 +164,7 @@ type ProxyRow struct {
 	Proxy        string  `json:"proxy"`
 	ResponseTime float64 `json:"response_time"`
 	LastChecked  string  `json:"last_checked"`
+	Anon         string  `json:"anon,omitempty"` // elite | anonymous | transparent | ""
 }
 
 // GetProxyRows returns all stored proxies (with metadata) for the given type,
@@ -162,7 +173,7 @@ func (d *DB) GetProxyRows(proxyType string) ([]ProxyRow, error) {
 	if err := validateProxyType(proxyType); err != nil {
 		return nil, err
 	}
-	rows, err := d.conn.Query(fmt.Sprintf("SELECT proxy, response_time, last_checked FROM %s ORDER BY response_time ASC", proxyType))
+	rows, err := d.conn.Query(fmt.Sprintf("SELECT proxy, response_time, last_checked, anon FROM %s ORDER BY response_time ASC", proxyType))
 	if err != nil {
 		return nil, fmt.Errorf("select rows from %s: %w", proxyType, err)
 	}
@@ -171,9 +182,11 @@ func (d *DB) GetProxyRows(proxyType string) ([]ProxyRow, error) {
 	var out []ProxyRow
 	for rows.Next() {
 		var r ProxyRow
-		if err := rows.Scan(&r.Proxy, &r.ResponseTime, &r.LastChecked); err != nil {
+		var anon sql.NullString
+		if err := rows.Scan(&r.Proxy, &r.ResponseTime, &r.LastChecked, &anon); err != nil {
 			return nil, fmt.Errorf("scan row from %s: %w", proxyType, err)
 		}
+		r.Anon = anon.String
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
