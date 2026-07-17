@@ -9,6 +9,8 @@ env/
 
 # Data / local
 data.db
+data.db-shm
+data.db-wal
 
 # OS / misc
 **/.DS_Store
