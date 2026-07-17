@@ -151,9 +151,6 @@ The image is a static single binary on Alpine (CGO-free). Exposing on `0.0.0.0` 
 go test -race ./...
 ```
 
-CI (`.github/workflows/ci.yml`) runs gofmt, `go vet`, build, `go test -race ./...`, and a
-`docker build` on every push/PR.
-
 ## Notes / limitations
 
 - The relay forwards plaintext HTTP **and** tunnels HTTPS/any-TCP via `CONNECT`. A
