@@ -1,0 +1,33 @@
+<html>
+    <head>
+        <title>Proxy-Machine API Documentation</title>
+        <script>
+            function getServerUrl() {
+                return window.location.protocol + "//" + window.location.hostname + ":" + window.location.port;
+            }
+        </script>
+    </head>
+    <body>
+        <h1>Proxy-Machine API Documentation</h1>
+        <p>This API provides a list of proxies filtered based on their response time and the last time they were checked.</p>
+        <h2>Supported Proxy Types</h2>
+        <ul>
+            <li><b>HTTP</b> </li>
+            <li><b>HTTPS</b> </li>
+            <li><b>SOCKS4</b> </li>
+            <li><b>SOCKS5</b> </li>
+        </ul>
+        <h2>GET /proxy/{proxy_type}</h2>
+        <p>Returns a list of proxies of the specified type.</p>
+        <ul>
+            <li><b>proxy_type</b>: The type of proxy. </li>
+            <p>This can be either 'http', 'https', 'socks4' or 'socks5'. For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http'">/proxy/http</a> will return HTTP proxies.</p>
+            <li><b>time</b>: The maximum response time of the proxies in seconds. </li>
+            <p>For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http?time=1.5'">/proxy/http?time=1.5</a> will return proxies with a response time of 1.5 seconds or less.</p>
+            <li><b>minutes</b>: The maximum number of minutes since the last check of the proxies. </li>
+            <p>For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http?time=3&minutes=5'">/proxy/http?time=3&minutes=5</a> will return proxies with a response time of 3 seconds or less that were checked within the last 5 minutes.</p>
+            <li><b>format</b>: The format of the response. </li>
+            <p>This can be either 'json' or 'text'. For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http?time=3&minutes=5&format=text'">/proxy/http?time=3&minutes=5&format=text</a> will return the proxies as a plain text list.</p>
+        </ul>
+    </body>
+</html>

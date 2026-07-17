@@ -1,119 +1,174 @@
-# Proxy Machine
+# proxy-machine (Go)
 
-- proxy.py - retrieves and checks HTTP, HTTPS, SOCKS4, and SOCKS5 proxies.
+A single-binary proxy machine: harvest proxy candidates by port-scanning, **validate**
+them by proxying through each (origin ≠ self-IP), **store** survivors in SQLite, and
+**serve** them via an HTTP API, a rotating HTTP/HTTPS relay (CONNECT tunneling), and a
+client-facing SOCKS5 listener.
 
-- scan.py - performs port scanning with a SOCKS4 socket using found proxies.
+## Pipeline
 
-- checker.py - checks all types of proxies from scan_results or custom API '-url'
-
-- start.py - runs proxy delivery and checking, starts local hosted (http://127.0.0.1:8000) API service.
-  runs local http proxy server (http://127.0.0.1:3333) that listens on a local port and redirects all incoming requests through HTTP proxies handled by local API
-
-The availability of all proxies is checked using a GET request to https://httpbin.org/ip.
-
-Only those proxies that do not reveal the current external address of the system where the proxy checker is running are marked as available and alive.
-
-Every script can be run from the command line with several optional arguments to specify the required ping of the proxy server, the timeout of the checker, the number of worker threads to use when checking proxies, the type of proxies to retrieve and check, and the URL of the API to retrieve proxies from
-
-## Install
-With venv environment (python3-full and python3-pip required):
-
-```bash
-sudo apt update && sudo apt install git python3-full python3-pip -y
-git clone https://github.com/imhassla/proxy-machine.git
-cd proxy-machine
-python3 -m venv env
-source env/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+```
+scan (port scanner) ──► _scan_results ──┐
+                                        ▼
+public proxy lists ───────────►  checker (background loop)
+stored proxies (recheck) ─────►   • validate: GET httpbin.org/ip through each proxy,
+                                    keep only those whose origin (every comma component)
+                                    ≠ our self-IP  (anonymous + working)
+                                  • persist survivors → per-type tables (http/https/socks4/socks5)
+                                  • prune proxies that no longer validate
+                                  • consume _scan_results
+                                        │
+          ┌───────────────────────┼───────────────────────────┐
+          ▼                       ▼                           ▼
+  API (:8000)          HTTP/HTTPS relay (:3333)      SOCKS5 listener (:1080)
+  GET /proxy/{type}    forwards HTTP + tunnels        clients dial socks5://;
+  ?time=&minutes=      HTTPS (CONNECT) through a      tunnels through the same
+  from per-type        rotating, health-ranked        rotating upstreams. All
+  tables               validated upstream (dialed     three loopback by default.
+                       http/https/socks4/socks5); bounded
+                       failover + circuit breaker.
 ```
 
-With docker:
-```bash
-git clone https://github.com/imhassla/proxy-machine.git
-cd proxy-machine
-docker build -t proxy_machine .
-docker run -it --rm -v "$(pwd)":/app -p 8000:8000 -p 3333:3333 proxy_machine
+## Build & run
+
+```sh
+go build -o proxymachine .
+
+# Service (checker loop + API + HTTP/HTTPS relay + SOCKS5 listener):
+./proxymachine --dbPath data.db
+
+# Use it — every request egresses through a rotating validated upstream:
+curl -x http://127.0.0.1:3333 http://httpbin.org/ip        # HTTP via relay
+curl -x http://127.0.0.1:3333 https://httpbin.org/ip       # HTTPS via relay (CONNECT)
+curl --socks5-hostname 127.0.0.1:1080 https://httpbin.org/ip  # via SOCKS5 listener
+
+# One-shot port scan → _scan_results (the checker validates them next cycle):
+./proxymachine scan -cidr 192.0.2.0/24 -port 8080,3128 --dbPath data.db
 ```
 
-## Usage
-To start the Machine just run container or:
-```bash
-python3 start.py
-```
-To start proxy checks of all types and run uvicorn server for local Proxy-Machine API service.
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-start.png)
-
-Let's go with web-browser to http://127.0.0.1:8000, which is provided to us by uvicorn to see the API doc:
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-doc.png)
-
-Curl usage of API:
-```bash
-curl 'http://127.0.0.1:8000/proxy/http?time=2&minutes=2&format=text'
-```
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/api-demo.png)
-
-Curl usage of local proxy relay server:
-```bash
-curl --proxy 127.0.0.1:3333 http://httpbin.org/ip
-```
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/http-proxy-relay.png)
-
-## Other scripts and options
-```bash
-python3 proxy.py -type http
-```
-
-The script will continue to run until interrupted by the user (e.g., by pressing Ctrl-C).
-
-While running, it will periodically retrieve, check, and track proxies, updating the data.db
-
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_machine.png)
-
-```bash
-python3 scan.py -range 1.1.1.0/24 1.2.3.0/24 -port 53 80 8080
-```
-runs proxy.py in the background to retrieve SOCKS4 proxies and perform port scans over found proxies for all IP ranges with every selected port
-
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_scan.png)
-
-```bash
-python3 checker.py -list
-```
-or:
-```bash
-docker run -it --rm -v "$(pwd)":/app -p 8000:8000 -p 3333:3333 proxy_machine checker.py -list
-```
-check all HTTP, HTTPS, SOCKS4, and SOCKS5 proxies from open sources, print results, and store proxies in data.db.
-
-
-```bash
-python3 checker.py -ping -url 'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=all&timeout=300'
-```
-check API source list as all types of proxies, print results and store in DB.
-
-![alt text](https://github.com/imhassla/proxy-machine/blob/main/img/demo_checker.png)
+The scan probes each `ip:port`. If the DB already holds validated **socks4** proxies it
+egresses **through** one (anonymous); otherwise — including every fresh install, since no
+component currently populates the socks4 table — it falls back to a **direct** TCP probe
+so it can bootstrap. IPv6 CIDRs are rejected; expansion is streamed and capped
+(`-maxHosts`, default 1,048,576) so a wide range can't OOM.
 
 ## Configuration
 
-### Supported environment variables
+Flags override an optional `--config` JSON/INI file, which overrides defaults. The INI
+form accepts a `[database] path = …` section key.
 
-- `CHECKER_WORKERS` - number of worker threads provided to [proxy.py](./proxy.py) and [checker.py](./checker.py) scripts in `-w` argument
-- `CHECKER_TIMEOUT` - timeout in seconds provided to [proxy.py](./proxy.py) and [checker.py](./checker.py) scripts in `-t` argument
-- `API_WORKERS` - number of workers API server is run with
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--dbPath` | `data.db` | SQLite path |
+| `--workers` | `50` | validation worker pool size |
+| `--timeout` | `30s` | total per-proxy validation timeout (list/IP fetch and per-proxy check) |
+| `--connectTimeout` | `5s` | connect (+SOCKS handshake) timeout per proxy — dead proxies fail fast |
+| `--checkInterval` | `60s` | background re-validation cadence |
+| `--relayAddr` | `127.0.0.1:3333` | HTTP relay bind (forwards HTTP + tunnels HTTPS via CONNECT) |
+| `--apiAddr` | `127.0.0.1:8000` | API bind |
+| `--socksAddr` | `127.0.0.1:1080` | client SOCKS5 listener bind (`off` to disable) |
+| `--maxFailover` | `5` | max upstream proxies tried per request/tunnel |
+| `--stickyHeader` | _(off)_ | request header for session affinity (pins a session to an upstream) |
+| `--stickyTTL` | `10m` | sliding idle lifetime of a sticky-session pin |
+| `--proxyUser` / `--proxyPass` | _(off)_ | require auth on the relay (Basic) **and** SOCKS5 (user/pass) |
+| `--maxHosts` | `1048576` | (scan) cap on expanded host IPs |
 
-## Troubleshooting
+A ready-to-edit [`config.example.json`](config.example.json) lists every field; pass it
+with `--config config.example.json`.
 
-If you encounter any issues while running this script, try checking the following:
+## Proxy sources
 
-- Make sure that all dependencies are installed and up-to-date.
-- Check that you have specified valid values for any command-line arguments.
-- If you are using a custom API URL to retrieve proxies, make sure that it is correctly formatted and returns a valid list of proxies.
+The checker harvests candidates from re-verified public lists (HTTP/SOCKS4/SOCKS5), then
+validates every one before storing it. The built-in set is `publicProxyURLs` in
+[`checker/checker.go`](checker/checker.go); override it without recompiling via
+`--sources url1,url2` (or a `"sources": [...]` config array). Each source's type is inferred
+from its URL. The parser normalizes each line — bare `ip:port`, `scheme://ip:port`, and
+trailing columns are all accepted, and junk lines are dropped.
 
-## Limitations
+**On "https" sources:** there is no usable public list of true *TLS-to-proxy* (https)
+proxies — files named `…-https.txt` contain plaintext HTTP proxies that support `CONNECT`,
+which belong in the http pool. Any validated **http/socks** proxy already carries HTTPS
+traffic: the client (or the relay) sends `CONNECT host:443` to the proxy, the proxy opens a
+raw tunnel, and end-to-end TLS runs **inside** that tunnel — the proxy never sees the
+plaintext. That's why `/proxy/https` (dial-scheme = TLS-to-proxy) is legitimately sparse
+while http/socks proxies are your HTTPS-capable pool.
 
-The accuracy of the proxy availability checks may vary depending on network conditions and other factors. Proxies that are reported as available may not always be accessible or reliable.
+## API
 
-## License
+`GET /proxy/{type}` where `type` ∈ `http | https | socks4 | socks5`. Here `type` is the
+**dial scheme** of the proxy, not its capability. `https` means a *TLS-to-proxy* server
+(you speak TLS to the proxy itself) — those are rare in the wild, so **`/proxy/https` is
+normally near-empty**. This is expected, not a bug: public "https proxy" lists actually
+contain plaintext **http** proxies that support `CONNECT`, so they live in `/proxy/http`.
+For **HTTPS traffic**, use any `http`/`socks` proxy — the relay auto-tunnels HTTPS through
+them via `CONNECT` (see `checker/https_smoke_test.go` for the proof).
 
-This script is distributed under the MIT license.
+- `time` — max response time in **seconds** (float), e.g. `?time=1.5`
+- `minutes` — max age since last check (default `30`; `0` disables)
+- `anon` — anonymity tier filter: `elite` (no proxy-revealing headers), `anonymous`
+  (proxy detectable but your IP hidden), or `unknown` (validated but not classified —
+  the header-reflecting endpoint wasn't reached). Transparent proxies (that leak your IP)
+  are never stored. Empty = any tier.
+- `format` — `json` (array of `{proxy,response_time,last_checked,anon}`, fastest first) or `text`
+
+An empty match is `200` with an empty body. `GET /` serves HTML docs. Probes: `GET /health`
+→ `ok` (liveness, always 200); `GET /ready` → `200` once ≥1 validated upstream exists, else
+`503` (readiness — use as a k8s readinessProbe / LB gate).
+
+Observability: `GET /stats` returns JSON `{proxies:{<type>:count}, relay:{…counters}}`;
+`GET /metrics` returns the same in Prometheus text format (`proxymachine_proxies`,
+`proxymachine_relay_requests_total`, `…_failures_total`, `…_upstream_attempts_total`);
+`GET /upstreams` lists each relay upstream's live health (ewma latency, consecutive fails,
+circuit state); `GET /ready` gates on ≥1 validated upstream.
+
+## Security defaults
+
+The API, HTTP relay and SOCKS5 listener all bind to **loopback** by default — a fresh
+install is **not** an open proxy. To expose the relay/SOCKS on a network, widen the bind
+(e.g. `--relayAddr 0.0.0.0:3333`) **and** set `--proxyUser`/`--proxyPass`: relay requests
+then need Basic `Proxy-Authorization` and SOCKS5 clients need RFC 1929 username/password
+(the credential is hop-by-hop-stripped / never forwarded upstream). Binding either to a
+non-loopback address **without** `--proxyUser` logs a loud open-proxy warning. The relay
+caps a request body at 32 MiB (returns `413` above it). Disable the SOCKS5 listener
+entirely with `--socksAddr off`.
+
+## Docker
+
+```sh
+docker build -t proxymachine .
+# Safe default (loopback-only, so bind-mount a data volume and exec in, or expose explicitly):
+docker run -p 3333:3333 -p 8000:8000 -p 1080:1080 -v pm:/data proxymachine \
+  --relayAddr 0.0.0.0:3333 --apiAddr 0.0.0.0:8000 --socksAddr 0.0.0.0:1080 \
+  --proxyUser u --proxyPass p
+```
+
+The image is a static single binary on Alpine (CGO-free). Exposing on `0.0.0.0` **requires**
+`--proxyUser`/`--proxyPass` or you run an open proxy.
+
+## Tests
+
+```sh
+go test -race ./...
+```
+
+## Notes / limitations
+
+- The relay forwards plaintext HTTP **and** tunnels HTTPS/any-TCP via `CONNECT`. A
+  client-facing **SOCKS5** listener (CONNECT only;
+  no BIND/UDP) tunnels through the same upstreams. Both dial upstream http/https/socks4/socks5
+  proxies with the correct scheme; an https upstream's TLS hop is not cert-verified (free
+  proxies rarely present valid certs) — the client's end-to-end TLS inside the tunnel is
+  unaffected and still authenticates the real target.
+- Upstream selection is **health-ranked**: alive/unknown proxies rotate (IP diversity);
+  proven-slow ones are demoted and a proxy with a run of failures trips a **circuit
+  breaker** (skipped for a cooldown). Each request tries at most `--maxFailover` upstreams,
+  and each attempt is time-bounded so a hanging dead proxy can't eat the request budget.
+- **Session affinity** (`--stickyHeader`): relay/CONNECT requests carrying the header are
+  pinned to the upstream they last succeeded through (sliding `--stickyTTL`), so sites that
+  bind a session to the egress IP keep the same IP. Failover still applies if the pin dies.
+- socks4/4a proxies are validated (dialed through with the `pkg/socks` client, since
+  net/http can't proxy socks4) and served/egressed like the other types.
+- Failover replays only idempotent methods (GET/HEAD/OPTIONS/TRACE/PUT/DELETE); POST/
+  PATCH are not retried across upstreams, to avoid duplicate side effects.
+- SQLite is opened with a single connection (`SetMaxOpenConns(1)`) so concurrent
+  checker-writes and API/relay-reads can't race to `SQLITE_BUSY`.

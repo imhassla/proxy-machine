@@ -1,10 +1,17 @@
+# Go
+/proxymachine
+*.test
+
+# Python
 uvicorn.log
-data.db
 __pycache__/
 env/
-.DS_Store
-.DS_Store
+
+# Data / local
+data.db
+data.db-shm
+data.db-wal
+
+# OS / misc
 **/.DS_Store
-*.DS_Store
 .dockerignorex
-env/
