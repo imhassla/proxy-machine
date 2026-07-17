@@ -60,8 +60,15 @@ var (
 		"https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
 		// http (scheme://ip:port — normalized)
 		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
-		// https (typed via getProxyType on the URL path)
-		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
+		// NOTE: no public "https proxy" list is included. Files named proxies-https.txt
+		// actually contain plaintext HTTP proxies that merely SUPPORT CONNECT/HTTPS tunneling
+		// — they are not TLS-to-proxy servers, so validating them as type=https (a TLS
+		// handshake to the proxy) fails for essentially all of them. Such proxies belong in
+		// the http pool, and http proxies already serve HTTPS traffic via CONNECT (the relay
+		// does this automatically). The type=https path (with InsecureSkipVerify on the proxy
+		// hop) remains for genuine TLS-to-proxy proxies (e.g. found by the scanner), which
+		// are rare in the wild — so /proxy/https is legitimately sparse. See
+		// checker/https_smoke_test.go for the proof.
 		// socks5 (typed via getProxyType on the URL)
 		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
 		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",

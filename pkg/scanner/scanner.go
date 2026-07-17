@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"sort"
 	"strconv"
@@ -144,6 +145,9 @@ func (s *Scanner) Scan(ctx context.Context, opts *Options) error {
 	proxies, err := s.db.GetProxiesByType("socks4")
 	if err != nil {
 		return fmt.Errorf("fetch socks4 proxies: %w", err)
+	}
+	if len(proxies) == 0 {
+		log.Printf("WARNING: no socks4 proxies in the DB — scanning DIRECTLY from this host's own IP (not anonymous). Populate socks4 first for anonymous scanning.")
 	}
 
 	// Pre-flight: parse + reject IPv6 + bound the host count BEFORE streaming, so a bad

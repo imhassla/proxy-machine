@@ -115,12 +115,15 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB, m *
 	// ("host:port", no leading "/"). http.ServeMux routes by path and 404s such requests
 	// before the handler runs, so the relay serves a single HandlerFunc directly.
 	s.srv = &http.Server{
-		Addr:              addr,
-		Handler:           http.HandlerFunc(s.handleRequest),
-		ReadTimeout:       5 * time.Second,
-		WriteTimeout:      timeout + 5*time.Second,
+		Addr:    addr,
+		Handler: http.HandlerFunc(s.handleRequest),
+		// No ReadTimeout/WriteTimeout: a relayed response is streamed via io.Copy and may be
+		// a large/slow download that a wall-clock write deadline would truncate mid-stream
+		// (CONNECT tunnels are hijacked and already escape it — this removes the asymmetry).
+		// The per-request context (s.timeout) still bounds the upstream fetch; idle client
+		// conns are reaped by IdleTimeout; headers are bounded by ReadHeaderTimeout.
 		IdleTimeout:       120 * time.Second,
-		ReadHeaderTimeout: 2 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	// Optional client-facing SOCKS5 listener, tunneling through the same rotating,

@@ -86,7 +86,13 @@ dropped — so adding a new source is just adding its URL.
 
 ## API
 
-`GET /proxy/{type}` where `type` ∈ `http | https | socks4 | socks5`:
+`GET /proxy/{type}` where `type` ∈ `http | https | socks4 | socks5`. Here `type` is the
+**dial scheme** of the proxy, not its capability. `https` means a *TLS-to-proxy* server
+(you speak TLS to the proxy itself) — those are rare in the wild, so **`/proxy/https` is
+normally near-empty**. This is expected, not a bug: public "https proxy" lists actually
+contain plaintext **http** proxies that support `CONNECT`, so they live in `/proxy/http`.
+For **HTTPS traffic**, use any `http`/`socks` proxy — the relay auto-tunnels HTTPS through
+them via `CONNECT` (see `checker/https_smoke_test.go` for the proof).
 
 - `time` — max response time in **seconds** (float), e.g. `?time=1.5`
 - `minutes` — max age since last check (default `30`; `0` disables)

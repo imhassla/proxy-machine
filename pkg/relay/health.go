@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"sort"
 	"sync"
 	"time"
 )
@@ -82,11 +81,15 @@ func (h *health) report(addr string, ok bool, latency time.Duration) {
 func (h *health) rank(addr string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.rankLocked(addr, h.now())
+}
+
+func (h *health) rankLocked(addr string, now time.Time) int {
 	s := h.m[addr]
 	if s == nil {
 		return 0 // unknown → optimistic, rotate with the healthy ones
 	}
-	if s.openUntil.After(h.now()) {
+	if s.openUntil.After(now) {
 		return 2
 	}
 	if s.hasData && s.ewma > slowLatency {
@@ -96,25 +99,26 @@ func (h *health) rank(addr string) int {
 }
 
 // order returns a health-classed copy of candidates: alive/unknown first, slow next,
-// circuit-open last. It is STABLE within a class, so equal-class candidates keep the
-// caller's round-robin order (IP rotation) untouched.
+// circuit-open last. It is a STABLE 3-way partition (O(n), one lock acquisition) so
+// equal-class candidates keep the caller's round-robin order (IP rotation) untouched —
+// replacing the previous per-request O(n log n) sort + per-element lock.
 func (h *health) order(candidates []string) []string {
-	out := make([]string, len(candidates))
-	copy(out, candidates)
-	buckets := make([]int, len(out))
-	for i, c := range out {
-		buckets[i] = h.rank(c)
+	now := h.now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// b0 is allocated at full capacity so the two follow-up appends reuse its backing
+	// array (no realloc): [alive...][slow...][open...].
+	b0 := make([]string, 0, len(candidates))
+	var b1, b2 []string
+	for _, c := range candidates {
+		switch h.rankLocked(c, now) {
+		case 1:
+			b1 = append(b1, c)
+		case 2:
+			b2 = append(b2, c)
+		default:
+			b0 = append(b0, c)
+		}
 	}
-	idx := make([]int, len(out))
-	for i := range idx {
-		idx[i] = i
-	}
-	sort.SliceStable(idx, func(a, b int) bool {
-		return buckets[idx[a]] < buckets[idx[b]]
-	})
-	sorted := make([]string, len(out))
-	for i, j := range idx {
-		sorted[i] = out[j]
-	}
-	return sorted
+	return append(append(b0, b1...), b2...)
 }
