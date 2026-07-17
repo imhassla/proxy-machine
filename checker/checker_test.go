@@ -60,16 +60,16 @@ func newCheckerFixture(t *testing.T) *checkerFixture {
 		fmt.Fprint(w, proxyAddr+"\n")
 	}))
 
-	origIP, origTest, origLists := publicIPURL, proxyTestURL, publicProxyURLs
-	publicIPURL = ipServer.URL
-	proxyTestURL = ipServer.URL
+	origIP, origTest, origLists := publicIPURLs, proxyTestURLs, publicProxyURLs
+	publicIPURLs = []string{ipServer.URL}
+	proxyTestURLs = []string{ipServer.URL}
 	publicProxyURLs = []string{listServer.URL} // typed "http" by getProxyType
 
 	return &checkerFixture{
 		proxyAddr: proxyAddr,
 		listURL:   listServer.URL,
 		cleanup: func() {
-			publicIPURL, proxyTestURL, publicProxyURLs = origIP, origTest, origLists
+			publicIPURLs, proxyTestURLs, publicProxyURLs = origIP, origTest, origLists
 			ipServer.Close()
 			proxyServer.Close()
 			listServer.Close()
@@ -298,9 +298,9 @@ func TestCheckManager_RejectsLeakyCommaOrigin(t *testing.T) {
 	}))
 	defer listServer.Close()
 
-	origIP, origTest, origLists := publicIPURL, proxyTestURL, publicProxyURLs
-	publicIPURL, proxyTestURL, publicProxyURLs = ipServer.URL, ipServer.URL, []string{listServer.URL}
-	defer func() { publicIPURL, proxyTestURL, publicProxyURLs = origIP, origTest, origLists }()
+	origIP, origTest, origLists := publicIPURLs, proxyTestURLs, publicProxyURLs
+	publicIPURLs, proxyTestURLs, publicProxyURLs = []string{ipServer.URL}, []string{ipServer.URL}, []string{listServer.URL}
+	defer func() { publicIPURLs, proxyTestURLs, publicProxyURLs = origIP, origTest, origLists }()
 
 	d := newTestDB(t)
 	cm := New(&config.Config{Workers: 1, Timeout: 5 * time.Second}, d)
@@ -325,9 +325,9 @@ func TestCheckManager_PrunesDeadStoredEvenIfReappears(t *testing.T) {
 	}))
 	defer ipServer.Close()
 
-	origIP, origTest, origLists := publicIPURL, proxyTestURL, publicProxyURLs
-	publicIPURL, proxyTestURL, publicProxyURLs = ipServer.URL, ipServer.URL, []string{listServer.URL}
-	defer func() { publicIPURL, proxyTestURL, publicProxyURLs = origIP, origTest, origLists }()
+	origIP, origTest, origLists := publicIPURLs, proxyTestURLs, publicProxyURLs
+	publicIPURLs, proxyTestURLs, publicProxyURLs = []string{ipServer.URL}, []string{ipServer.URL}, []string{listServer.URL}
+	defer func() { publicIPURLs, proxyTestURLs, publicProxyURLs = origIP, origTest, origLists }()
 
 	d := newTestDB(t)
 	if err := d.StoreProxy("http", dead, 0.5, "2020-01-01 00:00:00"); err != nil {

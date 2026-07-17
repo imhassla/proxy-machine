@@ -91,7 +91,7 @@ func TestEndToEndPipeline(t *testing.T) {
 	// Real checker, validation endpoints pointed at the fakes; run ONE cycle.
 	cfg := &config.Config{Workers: 4, Timeout: 5 * time.Second}
 	mgr := checker.New(cfg, database)
-	mgr.IPURL, mgr.TestURL, mgr.ListURLs = ipbin.URL, ipbin.URL, nil
+	mgr.IPURLs, mgr.TestURLs, mgr.ListURLs = []string{ipbin.URL}, []string{ipbin.URL}, nil
 	mgr.RunCycle(context.Background())
 
 	// Stage 1 — checker→db: the scanned proxy validated as http and persisted; the scan
