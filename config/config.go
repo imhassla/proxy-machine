@@ -73,6 +73,10 @@ type Config struct {
 	// injection). TLS-MITM proxies are already rejected by strict target-cert verification.
 	HoneypotCheck bool
 
+	// GeoLookup, when true, runs a background process that enriches stored proxy IPs with
+	// country/ASN/ISP via an online lookup (ip-api.com), independent of the checker.
+	GeoLookup bool
+
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
 	// loopback default bind; a non-loopback RelayAddr should always set credentials).
@@ -98,12 +102,13 @@ func Load(args []string) (*Config, error) {
 		MaxProxyAge:        24 * time.Hour,
 		MaxRecheckInterval: 15 * time.Minute,
 		HoneypotCheck:      true,
+		GeoLookup:          true,
 	}
 
 	var configPath string
 	var workers, maxFailover, chainLength int
 	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge, maxRecheckInterval time.Duration
-	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg string
+	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg, geoArg string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
@@ -123,6 +128,7 @@ func Load(args []string) (*Config, error) {
 	fs.DurationVar(&stickyTTL, "stickyTTL", -1, "Sliding TTL of a sticky-session pin (default 10m)")
 	fs.StringVar(&sourcesArg, "sources", "", "Comma-separated proxy-list URLs (replaces the built-in sources)")
 	fs.StringVar(&honeypotArg, "honeypot", "", "Content-tamper detection: true|false (default true)")
+	fs.StringVar(&geoArg, "geo", "", "Background geo/ASN enrichment via online lookup: true|false (default true)")
 	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
 	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
 
@@ -188,6 +194,9 @@ func Load(args []string) (*Config, error) {
 	if honeypotArg != "" {
 		cfg.HoneypotCheck = honeypotArg == "true" || honeypotArg == "1" || honeypotArg == "yes"
 	}
+	if geoArg != "" {
+		cfg.GeoLookup = geoArg == "true" || geoArg == "1" || geoArg == "yes"
+	}
 	if proxyUser != "" {
 		cfg.ProxyUser = proxyUser
 	}
@@ -232,6 +241,7 @@ type fileConfig struct {
 	StickyTTL          *string   `json:"stickyTTL"`
 	Sources            *[]string `json:"sources"`
 	HoneypotCheck      *bool     `json:"honeypotCheck"`
+	GeoLookup          *bool     `json:"geoLookup"`
 	ProxyUser          *string   `json:"proxyUser"`
 	ProxyPass          *string   `json:"proxyPass"`
 }
@@ -358,6 +368,11 @@ func loadINI(data []byte, cfg *Config) error {
 				b := val == "true" || val == "1" || val == "yes"
 				fc.HoneypotCheck = &b
 			}
+		case "geolookup":
+			if fc.GeoLookup == nil {
+				b := val == "true" || val == "1" || val == "yes"
+				fc.GeoLookup = &b
+			}
 		case "stickyttl":
 			if fc.StickyTTL == nil {
 				fc.StickyTTL = &val
@@ -451,6 +466,9 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 	}
 	if fc.HoneypotCheck != nil {
 		cfg.HoneypotCheck = *fc.HoneypotCheck
+	}
+	if fc.GeoLookup != nil {
+		cfg.GeoLookup = *fc.GeoLookup
 	}
 	if fc.MaxProxyAge != nil {
 		d, err := time.ParseDuration(*fc.MaxProxyAge)

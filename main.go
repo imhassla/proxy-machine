@@ -15,6 +15,7 @@ import (
 	"proxymachine/config"
 	"proxymachine/db"
 	"proxymachine/metrics"
+	"proxymachine/pkg/geo"
 	"proxymachine/pkg/relay"
 	"proxymachine/pkg/scanner"
 )
@@ -68,6 +69,16 @@ func runService(args []string) error {
 	go func() {
 		defer close(checkerDone)
 		checkerErr = manager.Start(ctx)
+	}()
+
+	// Geo/ASN enrichment runs as its OWN background process (online lookup), independent of
+	// the checker so validation never waits on it. Errors are logged internally.
+	geoDone := make(chan struct{})
+	go func() {
+		defer close(geoDone)
+		if cfg.GeoLookup {
+			_ = geo.New(database).Run(ctx)
+		}
 	}()
 
 	// A server's Start() returns only on Shutdown (ErrServerClosed) or a fatal listen
@@ -133,6 +144,7 @@ func runService(args []string) error {
 	<-relayDone
 	<-socksDone
 	<-checkerDone
+	<-geoDone
 
 	if err := database.Close(); err != nil {
 		log.Printf("close database: %v", err)

@@ -193,6 +193,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
+// hostOnly strips the port from a "host:port" proxy address.
+func hostOnly(proxy string) string {
+	if i := strings.LastIndex(proxy, ":"); i > 0 {
+		return proxy[:i]
+	}
+	return proxy
+}
+
 // speedBuckets defines the latency histogram edges (seconds) for /insights.
 var speedBuckets = []struct {
 	label string
@@ -214,10 +222,15 @@ func (s *Server) handleInsights(w http.ResponseWriter, r *http.Request) {
 		Type         string  `json:"type"`
 		ResponseTime float64 `json:"response_time"`
 		Anon         string  `json:"anon"`
+		Geo          string  `json:"geo"`
 	}
 	type bucket struct {
 		Label string `json:"label"`
 		Count int    `json:"count"`
+	}
+	type geoCount struct {
+		Country string `json:"country"`
+		Count   int    `json:"count"`
 	}
 
 	anon := map[string]int{"elite": 0, "anonymous": 0, "unknown": 0}
@@ -243,7 +256,7 @@ func (s *Server) handleInsights(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				if i < 10 { // per-type fastest; merged + trimmed below
-					fastest = append(fastest, fastProxy{row.Proxy, t, row.ResponseTime, tier})
+					fastest = append(fastest, fastProxy{Proxy: row.Proxy, Type: t, ResponseTime: row.ResponseTime, Anon: tier})
 				}
 			}
 		}
@@ -257,11 +270,34 @@ func (s *Server) handleInsights(w http.ResponseWriter, r *http.Request) {
 		buckets[i] = bucket{speedBuckets[i].label, speed[i]}
 	}
 
+	// Geo: country distribution (from the background-enriched _geo table) + the country code
+	// on each fastest proxy.
+	geo := []geoCount{}
+	if s.db != nil {
+		if cc, err := s.db.CountByCountry(); err == nil {
+			for _, c := range cc {
+				geo = append(geo, geoCount{c.Code, c.Count})
+			}
+		}
+		var ips []string
+		for _, f := range fastest {
+			ips = append(ips, hostOnly(f.Proxy))
+		}
+		if g, err := s.db.GeoByIPs(ips); err == nil {
+			for i := range fastest {
+				if row, ok := g[hostOnly(fastest[i].Proxy)]; ok {
+					fastest[i].Geo = row.CountryCode
+				}
+			}
+		}
+	}
+
 	out := struct {
 		Anon    map[string]int `json:"anon"`
 		Speed   []bucket       `json:"speed"`
+		Geo     []geoCount     `json:"geo"`
 		Fastest []fastProxy    `json:"fastest"`
-	}{anon, buckets, fastest}
+	}{anon, buckets, geo, fastest}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(out)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"sync/atomic"
 
 	_ "modernc.org/sqlite"
@@ -428,4 +429,199 @@ func (d *DB) GetScanResults() ([]string, error) {
 	}
 	sort.Strings(results)
 	return results, nil
+}
+
+// --- geo enrichment (a background process looks up proxy IPs online and stores here) ---
+
+// GeoRow is a proxy IP's geolocation/ASN, keyed by IP (shared across proxy types/ports).
+type GeoRow struct {
+	IP          string `json:"ip"`
+	Country     string `json:"country"`
+	CountryCode string `json:"country_code"`
+	ASN         string `json:"asn"`
+	ISP         string `json:"isp"`
+}
+
+// EnsureGeoTable creates the _geo table if it does not exist.
+func (d *DB) EnsureGeoTable() error {
+	if d.conn == nil {
+		return fmt.Errorf("database connection is nil")
+	}
+	_, err := d.conn.Exec(`CREATE TABLE IF NOT EXISTS _geo (
+		ip TEXT PRIMARY KEY,
+		country TEXT,
+		country_code TEXT,
+		asn TEXT,
+		isp TEXT,
+		updated TEXT
+	)`)
+	if err != nil {
+		return fmt.Errorf("create geo table: %w", err)
+	}
+	return nil
+}
+
+// hostOf strips the port from a "host:port" proxy address (best-effort).
+func hostOf(proxy string) string {
+	if i := strings.LastIndex(proxy, ":"); i > 0 {
+		return proxy[:i]
+	}
+	return proxy
+}
+
+// ProxyIPsMissingGeo returns up to limit distinct proxy IPs (across all per-type tables)
+// that have no row in _geo yet — the work queue for the enricher.
+func (d *DB) ProxyIPsMissingGeo(limit int) ([]string, error) {
+	if d.conn == nil {
+		return nil, fmt.Errorf("database connection is nil")
+	}
+	if err := d.EnsureGeoTable(); err != nil {
+		return nil, err
+	}
+	known := map[string]struct{}{}
+	rows, err := d.conn.Query("SELECT ip FROM _geo")
+	if err != nil {
+		return nil, fmt.Errorf("select geo ips: %w", err)
+	}
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		known[ip] = struct{}{}
+	}
+	rows.Close()
+
+	seen := map[string]struct{}{}
+	var out []string
+	for table := range allowedTypes {
+		prox, err := d.conn.Query(fmt.Sprintf("SELECT proxy FROM %s", table))
+		if err != nil {
+			continue
+		}
+		for prox.Next() {
+			var p string
+			if err := prox.Scan(&p); err != nil {
+				continue
+			}
+			ip := hostOf(p)
+			if _, k := known[ip]; k {
+				continue
+			}
+			if _, s := seen[ip]; s {
+				continue
+			}
+			seen[ip] = struct{}{}
+			out = append(out, ip)
+			if len(out) >= limit {
+				prox.Close()
+				return out, nil
+			}
+		}
+		prox.Close()
+	}
+	return out, nil
+}
+
+// StoreGeo upserts geolocation rows.
+func (d *DB) StoreGeo(rows []GeoRow, updated string) error {
+	if d.conn == nil {
+		return fmt.Errorf("database connection is nil")
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := d.EnsureGeoTable(); err != nil {
+		return err
+	}
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	stmt, err := tx.Prepare("INSERT OR REPLACE INTO _geo (ip, country, country_code, asn, isp, updated) VALUES (?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("prepare geo insert: %w", err)
+	}
+	defer stmt.Close()
+	for _, r := range rows {
+		if _, err := stmt.Exec(r.IP, r.Country, r.CountryCode, r.ASN, r.ISP, updated); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("insert geo %q: %w", r.IP, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit geo: %w", err)
+	}
+	return nil
+}
+
+// CountByCountry returns proxy-IP counts per country (from _geo), most first — for the
+// dashboard's TOP COUNTRIES panel.
+func (d *DB) CountByCountry() ([]struct {
+	Country string
+	Code    string
+	Count   int
+}, error) {
+	if d.conn == nil {
+		return nil, fmt.Errorf("database connection is nil")
+	}
+	if err := d.EnsureGeoTable(); err != nil {
+		return nil, err
+	}
+	rows, err := d.conn.Query(`SELECT COALESCE(NULLIF(country,''),'?'), COALESCE(NULLIF(country_code,''),'??'), COUNT(*)
+		FROM _geo GROUP BY country_code ORDER BY 3 DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("count by country: %w", err)
+	}
+	defer rows.Close()
+	var out []struct {
+		Country string
+		Code    string
+		Count   int
+	}
+	for rows.Next() {
+		var c struct {
+			Country string
+			Code    string
+			Count   int
+		}
+		if err := rows.Scan(&c.Country, &c.Code, &c.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// GeoByIPs returns geo rows for the given IPs (missing IPs simply absent from the map).
+func (d *DB) GeoByIPs(ips []string) (map[string]GeoRow, error) {
+	out := map[string]GeoRow{}
+	if d.conn == nil || len(ips) == 0 {
+		return out, nil
+	}
+	if err := d.EnsureGeoTable(); err != nil {
+		return nil, err
+	}
+	// Query one at a time via a prepared statement (IP lists are small — the API's fastest
+	// list is ≤10, a country filter dedups first). Keeps the SQL simple and injection-free.
+	stmt, err := d.conn.Prepare("SELECT country, country_code, asn, isp FROM _geo WHERE ip = ?")
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+	for _, ip := range ips {
+		var g GeoRow
+		g.IP = ip
+		err := stmt.QueryRow(ip).Scan(&g.Country, &g.CountryCode, &g.ASN, &g.ISP)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[ip] = g
+	}
+	return out, nil
 }
