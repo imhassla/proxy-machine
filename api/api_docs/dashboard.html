@@ -120,6 +120,15 @@
     .bar-label { width: 54px; color: #00cc33; flex-shrink: 0; }
     .bar-track { flex: 1; color: #00ff41; letter-spacing: 0; overflow: hidden; white-space: nowrap; }
     .bar-count { width: 52px; text-align: right; flex-shrink: 0; }
+    .net-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 3px 0;
+      font-size: 13px;
+    }
+    .net-name { color: #00cc33; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .net-count { color: #00ff41; text-align: right; flex-shrink: 0; }
 
     /* Relay / stats table */
     .kv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -275,17 +284,22 @@
     el.innerHTML = html || '<span class="dimmed">no data</span>';
   }
 
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   function renderNetworks(nets) {
     var el = document.getElementById('networks');
     if (!nets || !Array.isArray(nets) || nets.length === 0) {
       el.innerHTML = '<span class="dimmed">enriching (geo/ASN lookup runs in the background)...</span>';
       return;
     }
-    barRows(el, nets.slice(0, 8).map(function(n) {
-      var label = n.network || '?';
-      if (label.length > 24) label = label.slice(0, 24);
-      return [label, n.count || 0, ''];
-    }));
+    var html = '';
+    nets.slice(0, 10).forEach(function(n) {
+      html += '<div class="net-row"><span class="net-name">' + esc(n.network || '?') +
+        '</span><span class="net-count">' + (n.count || 0) + '</span></div>';
+    });
+    el.innerHTML = html;
   }
 
   function renderSpeed(speed) {
