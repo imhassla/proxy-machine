@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -116,6 +117,28 @@ func TestHealthUnknownPreservesOrder(t *testing.T) {
 	for i := range in {
 		if got[i] != in[i] {
 			t.Fatalf("unknown set reordered at %d: got %v want %v", i, got, in)
+		}
+	}
+}
+
+// The selector round-robins STRICTLY over the proven-live set: N requests across K live
+// proxies pick each exactly N/K times (real IP rotation, not the first-survivor stick).
+func TestSelectorRotatesLive(t *testing.T) {
+	s := newSelector(&fakeManager{cache: map[string][]string{"http": {"a:1", "b:1", "c:1"}}}, nil)
+	if err := s.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for i := 0; i < 6; i++ {
+		pick, _, err := s.next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[pick]++
+	}
+	for _, p := range []string{"http://a:1", "http://b:1", "http://c:1"} {
+		if seen[p] != 2 {
+			t.Fatalf("proxy %s picked %d times, want 2 (even rotation): %v", p, seen[p], seen)
 		}
 	}
 }

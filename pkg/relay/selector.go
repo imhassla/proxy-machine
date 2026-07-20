@@ -40,7 +40,13 @@ type selector struct {
 	mu         sync.Mutex
 	candidates []string
 	nextIndex  int
-	health     *health
+	// live is the proven-live subset (rank 0: checker-validated AND not relay-demoted),
+	// rebuilt each refresh. next() round-robins STRICTLY over it (via liveIndex) so
+	// consecutive requests egress through DIFFERENT working proxies (real IP rotation)
+	// instead of all landing on the first survivor in the window.
+	live      []string
+	liveIndex int
+	health    *health
 
 	rmu         sync.Mutex // guards the on-demand refresh throttle
 	refreshing  bool
@@ -101,6 +107,8 @@ func (s *selector) refresh(ctx context.Context) error {
 	s.health.retain(seen)
 
 	if len(list) == 0 {
+		s.candidates = nil
+		s.live = nil
 		return ErrNoProxyAvailable
 	}
 
@@ -108,6 +116,10 @@ func (s *selector) refresh(ctx context.Context) error {
 	if s.nextIndex >= len(s.candidates) {
 		s.nextIndex = 0
 	}
+	// Rebuild the proven-live rotation set. At cold start nothing is relay-demoted yet, so
+	// this is the whole validated set → immediate diversity; as proxies fail at relay-time
+	// they drop out on the next refresh, narrowing rotation to the working ones.
+	s.live = s.health.provenLive(list)
 	return nil
 }
 
@@ -158,7 +170,7 @@ func (s *selector) next(ctx context.Context) (string, []string, error) {
 
 	// Copy a bounded rotated window (round-robin start for fairness), then health-order just
 	// that window so alive/fast upstreams lead and circuit-open ones sink — O(returnWindow),
-	// not O(n).
+	// not O(n). This is the failover set.
 	w := returnWindow
 	if w > n {
 		w = n
@@ -168,5 +180,21 @@ func (s *selector) next(ctx context.Context) (string, []string, error) {
 		window[i] = s.candidates[(idx+i)%n]
 	}
 	ordered := s.health.order(window)
+
+	// IP-rotation: pick the NEXT proven-live proxy round-robin (diverse exits), then use the
+	// health-ordered window as failover. Without a live set (cold start) fall back to the
+	// window's head.
+	if len(s.live) > 0 {
+		pick := s.live[s.liveIndex%len(s.live)]
+		s.liveIndex++
+		out := make([]string, 0, len(ordered)+1)
+		out = append(out, pick)
+		for _, c := range ordered {
+			if c != pick {
+				out = append(out, c)
+			}
+		}
+		return pick, out, nil
+	}
 	return ordered[0], ordered, nil
 }

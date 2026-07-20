@@ -104,6 +104,22 @@ func (h *health) entries() []healthEntry {
 	return out
 }
 
+// provenLive returns the subset of candidates that are class 0 (proven-good or untried, not
+// recently-failed/slow/circuit-open) — the set the selector round-robins for IP rotation.
+// One lock acquisition for the whole scan.
+func (h *health) provenLive(candidates []string) []string {
+	now := h.now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if h.rankLocked(c, now) == 0 {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // retain drops health entries whose addr is not in keep, so the map can't grow unbounded as
 // free-proxy addresses churn. Called on each selector refresh with the live candidate set.
 func (h *health) retain(keep map[string]struct{}) {
