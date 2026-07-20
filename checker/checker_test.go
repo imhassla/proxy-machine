@@ -205,7 +205,7 @@ func TestNormalizeProxyLine(t *testing.T) {
 		{"proxy.example.com:8080", "proxy.example.com:8080", true}, // hostname:port
 		{"", "", false},                 // blank
 		{"# a comment", "", false},      // comment
-		{"error code: 502", "", false},  // injected junk (mmpx12)
+		{"error code: 502", "", false},  // injected junk a source may emit
 		{"not-a-proxy", "", false},      // no port
 		{"1.2.3.4:notaport", "", false}, // non-numeric port
 		{"1.2.3.4:0", "", false},        // port out of range

@@ -73,7 +73,6 @@ var (
 		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
 		"https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
 		"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-		"https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
 		// http (scheme://ip:port — normalized)
 		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
 		// NOTE: no public "https proxy" list is included. Files named proxies-https.txt
@@ -91,13 +90,11 @@ var (
 		"https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
 		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt",
 		"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
-		"https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
 		// socks4
 		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
 		"https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
 		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt",
 		"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt",
-		"https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt",
 	}
 )
 
