@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<!-- PROXY-MACHINE DASHBOARD -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PROXY-MACHINE :: Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      background: #000;
+      color: #00ff41;
+      font-family: ui-monospace, Menlo, "Courier New", monospace;
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* CRT scanline overlay */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 3px,
+        rgba(0, 0, 0, 0.18) 3px,
+        rgba(0, 0, 0, 0.18) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* Subtle green phosphor glow */
+    body {
+      text-shadow: 0 0 4px rgba(0,255,65,0.45);
+    }
+
+    .page {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 20px 16px 40px;
+    }
+
+    /* Nav */
+    .nav {
+      font-size: 12px;
+      margin-bottom: 12px;
+      color: #00aa2a;
+    }
+    .nav a { color: #00ff41; text-decoration: none; }
+    .nav a:hover { text-decoration: underline; }
+
+    /* ASCII header */
+    .header pre {
+      font-size: 13px;
+      line-height: 1.2;
+      color: #00ff41;
+      margin-bottom: 8px;
+    }
+
+    /* Status bar */
+    .statusbar {
+      display: flex;
+      justify-content: space-between;
+      border-top: 1px solid #00aa2a;
+      border-bottom: 1px solid #00aa2a;
+      padding: 3px 6px;
+      margin-bottom: 18px;
+      font-size: 12px;
+      color: #00aa2a;
+    }
+    .statusbar .cursor::after {
+      content: '█';
+      animation: blink 1.1s step-end infinite;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
+    /* Panel wrapper */
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .panel-full { grid-column: 1 / -1; }
+
+    /* Individual panel */
+    .panel {
+      border: 1px solid #00aa2a;
+      padding: 0;
+      overflow: hidden;
+    }
+    .panel-title {
+      background: #001a07;
+      border-bottom: 1px solid #00aa2a;
+      padding: 4px 8px;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      color: #00cc33;
+    }
+    .panel-body {
+      padding: 10px 10px;
+      min-height: 60px;
+    }
+
+    /* Proxy count bars */
+    .bar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 3px 0;
+      font-size: 13px;
+    }
+    .bar-label { width: 54px; color: #00cc33; flex-shrink: 0; }
+    .bar-track { flex: 1; color: #00ff41; letter-spacing: 0; overflow: hidden; white-space: nowrap; }
+    .bar-count { width: 52px; text-align: right; flex-shrink: 0; }
+
+    /* Relay / stats table */
+    .kv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .kv-table td { padding: 2px 4px; }
+    .kv-table td:first-child { color: #00cc33; }
+    .kv-table td:last-child { text-align: right; }
+    .kv-table tr:nth-child(even) td { background: rgba(0,255,65,0.04); }
+
+    /* Upstreams table */
+    .up-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .up-table th { color: #00cc33; text-align: left; padding: 2px 6px 4px; border-bottom: 1px solid #00aa2a; font-weight: normal; }
+    .up-table td { padding: 2px 6px; }
+    .up-table tr:nth-child(even) td { background: rgba(0,255,65,0.04); }
+    .circuit-open  { color: #ff4400; }
+    .circuit-close { color: #00ff41; }
+
+    /* Proxies sample */
+    .proxy-row { font-size: 12px; padding: 2px 0; display: flex; gap: 8px; }
+    .proxy-addr { flex: 1; }
+    .proxy-rt   { color: #00aa2a; width: 56px; text-align: right; }
+    .proxy-anon { color: #00aa2a; width: 80px; text-align: right; }
+
+    .dimmed { color: #007020; }
+    .error  { color: #ff4400; }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <div class="nav">
+    <a href="/">[← API DOCS]</a>
+  </div>
+
+  <div class="header">
+    <pre>
+ ██████╗ ██████╗  ██████╗ ██╗  ██╗██╗   ██╗      ███╗   ███╗ █████╗  ██████╗██╗  ██╗██╗███╗   ██╗███████╗
+ ██╔══██╗██╔══██╗██╔═══██╗╚██╗██╔╝╚██╗ ██╔╝      ████╗ ████║██╔══██╗██╔════╝██║  ██║██║████╗  ██║██╔════╝
+ ██████╔╝██████╔╝██║   ██║ ╚███╔╝  ╚████╔╝ █████╗██╔████╔██║███████║██║     ███████║██║██╔██╗ ██║█████╗
+ ██╔═══╝ ██╔══██╗██║   ██║ ██╔██╗   ╚██╔╝  ╚════╝██║╚██╔╝██║██╔══██║██║     ██╔══██║██║██║╚██╗██║██╔══╝
+ ██║     ██║  ██║╚██████╔╝██╔╝ ██╗   ██║         ██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║██║██║ ╚████║███████╗
+ ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝         ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝</pre>
+  </div>
+
+  <div class="statusbar">
+    <span id="status-msg" class="dimmed">INITIALIZING...</span>
+    <span>POLL: 3s&nbsp;&nbsp;<span class="cursor"></span></span>
+  </div>
+
+  <div class="panels">
+
+    <!-- Panel 1: Proxy Counts -->
+    <div class="panel">
+      <div class="panel-title">┌─ PROXY COUNTS ─────────────────────────────</div>
+      <div class="panel-body" id="proxy-counts">
+        <span class="dimmed">loading...</span>
+      </div>
+    </div>
+
+    <!-- Panel 2: Relay Counters -->
+    <div class="panel">
+      <div class="panel-title">┌─ RELAY COUNTERS ───────────────────────────</div>
+      <div class="panel-body" id="relay-counters">
+        <span class="dimmed">loading...</span>
+      </div>
+    </div>
+
+    <!-- Panel 3: Upstream Health (full-width) -->
+    <div class="panel panel-full">
+      <div class="panel-title">┌─ UPSTREAM HEALTH ──────────────────────────────────────────────────────</div>
+      <div class="panel-body" id="upstreams">
+        <span class="dimmed">loading...</span>
+      </div>
+    </div>
+
+    <!-- Panel 4: Recent Proxies sample (full-width) -->
+    <div class="panel panel-full">
+      <div class="panel-title">┌─ RECENT HTTP PROXIES (sample, no age filter) ──────────────────────────</div>
+      <div class="panel-body" id="recent-proxies">
+        <span class="dimmed">loading...</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  var BAR_MAX = 30; // max bar width in █ chars
+
+  function bar(count, maxCount) {
+    if (maxCount <= 0) return '';
+    var filled = Math.round((count / maxCount) * BAR_MAX);
+    if (filled < 0) filled = 0;
+    if (filled > BAR_MAX) filled = BAR_MAX;
+    var empty = BAR_MAX - filled;
+    return '█'.repeat(filled) + '░'.repeat(empty);
+  }
+
+  function setStatus(msg, isErr) {
+    var el = document.getElementById('status-msg');
+    el.textContent = msg;
+    el.className = isErr ? 'error' : '';
+  }
+
+  function renderProxyCounts(proxies) {
+    var el = document.getElementById('proxy-counts');
+    if (!proxies) { el.innerHTML = '<span class="error">no data</span>'; return; }
+    var types = ['http', 'https', 'socks4', 'socks5'];
+    var maxVal = 0;
+    types.forEach(function(t) { var v = proxies[t] || 0; if (v > maxVal) maxVal = v; });
+    var html = '';
+    types.forEach(function(t) {
+      var count = proxies[t] || 0;
+      html += '<div class="bar-row">';
+      html += '<span class="bar-label">' + t.toUpperCase() + '</span>';
+      html += '<span class="bar-track">' + bar(count, maxVal) + '</span>';
+      html += '<span class="bar-count">' + count + '</span>';
+      html += '</div>';
+    });
+    el.innerHTML = html;
+  }
+
+  function renderRelayCounters(relay) {
+    var el = document.getElementById('relay-counters');
+    if (!relay) { el.innerHTML = '<span class="error">no data</span>'; return; }
+    var rows = [
+      ['HTTP Requests',    relay.relay_http_requests    || 0],
+      ['CONNECT Requests', relay.relay_connect_requests || 0],
+      ['SOCKS Requests',   relay.relay_socks_requests   || 0],
+      ['Relay Failures',   relay.relay_failures         || 0],
+      ['Upstream Attempts',relay.upstream_attempts      || 0],
+      ['Upstream Failures',relay.upstream_failures      || 0],
+    ];
+    var html = '<table class="kv-table">';
+    rows.forEach(function(r) {
+      html += '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>';
+    });
+    html += '</table>';
+    el.innerHTML = html;
+  }
+
+  function renderUpstreams(data) {
+    var el = document.getElementById('upstreams');
+    if (!data || !Array.isArray(data)) {
+      el.innerHTML = '<span class="dimmed">no upstreams data (endpoint may return 404 if relay not wired)</span>';
+      return;
+    }
+    if (data.length === 0) {
+      el.innerHTML = '<span class="dimmed">no upstreams configured</span>';
+      return;
+    }
+    var html = '<table class="up-table">';
+    html += '<thead><tr><th>ADDR</th><th>TYPE</th><th>EWMA(ms)</th><th>FAILS</th><th>CIRCUIT</th></tr></thead><tbody>';
+    data.forEach(function(u) {
+      var circuitClass = u.circuit_open ? 'circuit-open' : 'circuit-close';
+      var circuitTxt   = u.circuit_open ? 'OPEN' : 'CLOSED';
+      var ewmaMs = (u.ewma_seconds != null) ? (u.ewma_seconds * 1000).toFixed(1) : 'n/a';
+      html += '<tr>';
+      html += '<td>' + (u.addr || '') + '</td>';
+      html += '<td>' + (u.type || '') + '</td>';
+      html += '<td>' + ewmaMs + '</td>';
+      html += '<td>' + (u.consecutive_fails || 0) + '</td>';
+      html += '<td class="' + circuitClass + '">' + circuitTxt + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }
+
+  function renderRecentProxies(data) {
+    var el = document.getElementById('recent-proxies');
+    if (!data || !Array.isArray(data)) {
+      el.innerHTML = '<span class="error">no data</span>';
+      return;
+    }
+    if (data.length === 0) {
+      el.innerHTML = '<span class="dimmed">no http proxies in store</span>';
+      return;
+    }
+    var sample = data.slice(0, 5);
+    var html = '<div class="proxy-row dimmed"><span class="proxy-addr">ADDRESS</span><span class="proxy-rt">RT(s)</span><span class="proxy-anon">ANON</span></div>';
+    sample.forEach(function(p) {
+      html += '<div class="proxy-row">';
+      html += '<span class="proxy-addr">' + (p.proxy || '') + '</span>';
+      html += '<span class="proxy-rt">' + (p.response_time != null ? p.response_time.toFixed(3) : 'n/a') + '</span>';
+      html += '<span class="proxy-anon">' + (p.anon || 'unknown') + '</span>';
+      html += '</div>';
+    });
+    if (data.length > 5) {
+      html += '<div class="dimmed" style="margin-top:4px;font-size:11px;">... and ' + (data.length - 5) + ' more</div>';
+    }
+    el.innerHTML = html;
+  }
+
+  function poll() {
+    var now = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+
+    // Fetch /stats
+    fetch('/stats')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        renderProxyCounts(d.proxies);
+        renderRelayCounters(d.relay);
+        setStatus('LAST POLL: ' + now, false);
+      })
+      .catch(function(e) {
+        setStatus('STATS FETCH ERROR: ' + e.message, true);
+      });
+
+    // Fetch /upstreams (may 404 if relay not wired)
+    fetch('/upstreams')
+      .then(function(r) {
+        if (r.status === 404) return null;
+        return r.json();
+      })
+      .then(function(d) { renderUpstreams(d); })
+      .catch(function() { renderUpstreams(null); });
+
+    // Fetch recent http proxies
+    fetch('/proxy/http?format=json&minutes=0')
+      .then(function(r) { return r.json(); })
+      .then(function(d) { renderRecentProxies(d); })
+      .catch(function() { renderRecentProxies(null); });
+  }
+
+  poll();
+  setInterval(poll, 3000);
+})();
+</script>
+</body>
+</html>

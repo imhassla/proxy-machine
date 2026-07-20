@@ -289,3 +289,20 @@ func TestSessionRotation(t *testing.T) {
 		t.Fatal("rotate returned empty")
 	}
 }
+
+func TestServer_Dashboard(t *testing.T) {
+	s := New("127.0.0.1:0", nil, nil, nil)
+	rec := httptest.NewRecorder()
+	s.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /dashboard: expected 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("GET /dashboard: expected text/html content-type, got %q", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<!-- PROXY-MACHINE DASHBOARD -->") {
+		t.Error("GET /dashboard: marker comment '<!-- PROXY-MACHINE DASHBOARD -->' not found in response body")
+	}
+}

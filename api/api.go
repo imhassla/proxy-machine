@@ -51,6 +51,7 @@ func New(addr string, manager *checker.CheckManager, database *db.DB, m *metrics
 	mux := http.NewServeMux()
 	mux.Handle("/docs/", http.StripPrefix("/docs/", http.FileServer(http.FS(docsFS))))
 	mux.HandleFunc("/", s.handleDocs)
+	mux.HandleFunc("/dashboard", s.handleDashboard)
 	mux.HandleFunc("/proxy/{type}", s.handleProxy)
 	mux.HandleFunc("/proxy.pac", s.handlePAC)
 	mux.HandleFunc("/health", s.handleHealth)
@@ -92,6 +93,21 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 	data, err := docsFS.ReadFile("api_docs/index.html")
 	if err != nil {
 		http.Error(w, "documentation unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	data, err := docsFS.ReadFile("api_docs/dashboard.html")
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
