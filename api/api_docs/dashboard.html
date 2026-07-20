@@ -179,10 +179,10 @@
       <div class="panel-body" id="proxy-counts"><span class="dimmed">loading...</span></div>
     </div>
 
-    <!-- Anonymity tiers -->
+    <!-- Top networks / ASN (geo enrichment) -->
     <div class="panel">
-      <div class="panel-title">┌─ ANONYMITY ────────────────────────────────</div>
-      <div class="panel-body" id="anon"><span class="dimmed">loading...</span></div>
+      <div class="panel-title">┌─ TOP NETWORKS (ASN) ───────────────────────</div>
+      <div class="panel-body" id="networks"><span class="dimmed">loading...</span></div>
     </div>
 
     <!-- Speed / latency distribution -->
@@ -275,14 +275,17 @@
     el.innerHTML = html || '<span class="dimmed">no data</span>';
   }
 
-  function renderAnon(anon) {
-    var el = document.getElementById('anon');
-    if (!anon) { el.innerHTML = '<span class="dimmed">no data</span>'; return; }
-    barRows(el, [
-      ['ELITE',     anon.elite     || 0, 'ok'],
-      ['ANONYMOUS', anon.anonymous || 0, ''],
-      ['UNKNOWN',   anon.unknown   || 0, 'dimmed'],
-    ]);
+  function renderNetworks(nets) {
+    var el = document.getElementById('networks');
+    if (!nets || !Array.isArray(nets) || nets.length === 0) {
+      el.innerHTML = '<span class="dimmed">enriching (geo/ASN lookup runs in the background)...</span>';
+      return;
+    }
+    barRows(el, nets.slice(0, 8).map(function(n) {
+      var label = n.network || '?';
+      if (label.length > 24) label = label.slice(0, 24);
+      return [label, n.count || 0, ''];
+    }));
   }
 
   function renderSpeed(speed) {
@@ -376,7 +379,7 @@
       fetch('/insights')
         .then(function(r) { return r.json(); })
         .then(function(d) {
-          renderAnon(d.anon);
+          renderNetworks(d.networks);
           renderSpeed(d.speed);
           renderGeo(d.geo);
           renderFastest(d.fastest);

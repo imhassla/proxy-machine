@@ -595,6 +595,41 @@ func (d *DB) CountByCountry() ([]struct {
 	return out, rows.Err()
 }
 
+// CountByNetwork returns proxy-IP counts per ASN/network (from _geo), most first — for the
+// dashboard's TOP NETWORKS panel. Capped at 12 rows.
+func (d *DB) CountByNetwork() ([]struct {
+	Network string
+	Count   int
+}, error) {
+	if d.conn == nil {
+		return nil, fmt.Errorf("database connection is nil")
+	}
+	if err := d.EnsureGeoTable(); err != nil {
+		return nil, err
+	}
+	rows, err := d.conn.Query(`SELECT COALESCE(NULLIF(asn,''),'?'), COUNT(*) FROM _geo
+		WHERE asn IS NOT NULL AND asn != '' GROUP BY asn ORDER BY 2 DESC LIMIT 12`)
+	if err != nil {
+		return nil, fmt.Errorf("count by network: %w", err)
+	}
+	defer rows.Close()
+	var out []struct {
+		Network string
+		Count   int
+	}
+	for rows.Next() {
+		var c struct {
+			Network string
+			Count   int
+		}
+		if err := rows.Scan(&c.Network, &c.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // GeoByIPs returns geo rows for the given IPs (missing IPs simply absent from the map).
 func (d *DB) GeoByIPs(ips []string) (map[string]GeoRow, error) {
 	out := map[string]GeoRow{}

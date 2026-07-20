@@ -232,6 +232,10 @@ func (s *Server) handleInsights(w http.ResponseWriter, r *http.Request) {
 		Country string `json:"country"`
 		Count   int    `json:"count"`
 	}
+	type netCount struct {
+		Network string `json:"network"`
+		Count   int    `json:"count"`
+	}
 
 	anon := map[string]int{"elite": 0, "anonymous": 0, "unknown": 0}
 	speed := make([]int, len(speedBuckets))
@@ -273,10 +277,16 @@ func (s *Server) handleInsights(w http.ResponseWriter, r *http.Request) {
 	// Geo: country distribution (from the background-enriched _geo table) + the country code
 	// on each fastest proxy.
 	geo := []geoCount{}
+	networks := []netCount{}
 	if s.db != nil {
 		if cc, err := s.db.CountByCountry(); err == nil {
 			for _, c := range cc {
 				geo = append(geo, geoCount{c.Code, c.Count})
+			}
+		}
+		if nn, err := s.db.CountByNetwork(); err == nil {
+			for _, n := range nn {
+				networks = append(networks, netCount{n.Network, n.Count})
 			}
 		}
 		var ips []string
@@ -293,11 +303,12 @@ func (s *Server) handleInsights(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := struct {
-		Anon    map[string]int `json:"anon"`
-		Speed   []bucket       `json:"speed"`
-		Geo     []geoCount     `json:"geo"`
-		Fastest []fastProxy    `json:"fastest"`
-	}{anon, buckets, geo, fastest}
+		Anon     map[string]int `json:"anon"`
+		Speed    []bucket       `json:"speed"`
+		Geo      []geoCount     `json:"geo"`
+		Networks []netCount     `json:"networks"`
+		Fastest  []fastProxy    `json:"fastest"`
+	}{anon, buckets, geo, networks, fastest}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(out)
