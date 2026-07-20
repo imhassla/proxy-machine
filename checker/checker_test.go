@@ -400,3 +400,31 @@ func TestRecheckIntervalAdaptive(t *testing.T) {
 		t.Errorf("disabled adaptive: recheckInterval(5) = %v, want 1m", got)
 	}
 }
+
+func TestHoneypotClean(t *testing.T) {
+	clean := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "proxymachine-canary")
+	}))
+	defer clean.Close()
+	tamper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "proxymachine-canary<script>ad</script>")
+	}))
+	defer tamper.Close()
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusServiceUnavailable)
+	}))
+	defer down.Close()
+
+	ctx := context.Background()
+	c := &http.Client{Timeout: 3 * time.Second}
+	if !honeypotClean(ctx, c, clean.URL, "proxymachine-canary") {
+		t.Error("clean canary flagged as tampered")
+	}
+	if honeypotClean(ctx, c, tamper.URL, "proxymachine-canary") {
+		t.Error("tampered body NOT detected")
+	}
+	// non-200 → don't penalize (false-positive-safe).
+	if !honeypotClean(ctx, c, down.URL, "proxymachine-canary") {
+		t.Error("a flaky (503) endpoint must not be treated as tampering")
+	}
+}

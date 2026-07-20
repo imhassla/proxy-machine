@@ -65,6 +65,67 @@ func dialUpstream(ctx context.Context, candidate, target string, timeout time.Du
 	return conn, nil
 }
 
+// dialChain opens a tunnel to `target` routed through EVERY proxy in `chain` in sequence
+// (nested handshakes) for extra anonymity: dial the entry node, then at each hop hand-shake
+// through the current node to the next node's socket (or the target at the last hop). Reuses
+// the same per-scheme handshakes as a single hop. timeout is the per-hop budget.
+func dialChain(ctx context.Context, chain []string, target string, timeout time.Duration) (net.Conn, error) {
+	if len(chain) == 0 {
+		return nil, fmt.Errorf("empty proxy chain")
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	// The whole chain shares a budget of timeout per hop.
+	dctx, cancel := context.WithTimeout(ctx, timeout*time.Duration(len(chain)))
+	defer cancel()
+
+	entry := proxyURL(chain[0])
+	conn, err := (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(dctx, "tcp", entry.Host)
+	if err != nil {
+		return nil, fmt.Errorf("dial chain entry %s: %w", entry.Host, err)
+	}
+	if dl, ok := dctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
+
+	for i, node := range chain {
+		u := proxyURL(node)
+		// If this hop is an https proxy, we must speak TLS to it before its CONNECT.
+		if u.Scheme == "https" {
+			tconn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, ServerName: hostOnly(u.Host)})
+			if err := tconn.HandshakeContext(dctx); err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("chain hop %d tls: %w", i, err)
+			}
+			conn = tconn
+		}
+		reach := target
+		if i+1 < len(chain) {
+			reach = proxyURL(chain[i+1]).Host // reach the NEXT proxy's socket
+		}
+		switch u.Scheme {
+		case "socks5":
+			if err = socks.Handshake5(conn, reach); err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("chain hop %d socks5: %w", i, err)
+			}
+		case "socks4":
+			if err = socks.Handshake4(conn, reach); err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("chain hop %d socks4: %w", i, err)
+			}
+		default: // http/https
+			if conn, err = httpConnect(conn, reach); err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("chain hop %d connect: %w", i, err)
+			}
+		}
+	}
+	_ = conn.SetDeadline(time.Time{})
+	return conn, nil
+}
+
 func hostOnly(hostPort string) string {
 	if h, _, err := net.SplitHostPort(hostPort); err == nil {
 		return h

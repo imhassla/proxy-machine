@@ -26,6 +26,16 @@ import (
 // hostile/huge source can't OOM the checker.
 const maxListBytes = 8 << 20 // 8 MiB
 
+// honeypotURL is a PLAINTEXT-HTTP canary whose body is exactly honeypotExpect
+// (httpbin /base64/<b64> echoes the decoded bytes). A proxy that injects into or rewrites
+// HTTP responses (ads/scripts) produces a different body → detected as tampering. Fetched
+// over http (not https) precisely because injection happens on plaintext, which our https
+// validation can't observe.
+const (
+	honeypotURL    = "http://httpbin.org/base64/cHJveHltYWNoaW5lLWNhbmFyeQ=="
+	honeypotExpect = "proxymachine-canary"
+)
+
 // userAgent is sent on every checker HTTP request. Go's default "Go-http-client/1.1" is
 // widely blocked by CDNs/anti-bot gateways (e.g. httpbin returns 503 to it while curl gets
 // 200) — a browser-like UA gets the harvest/self-IP requests through.
@@ -588,9 +598,35 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 		if leaked {
 			return 0, "", false
 		}
+		// Honeypot/tamper check: reject proxies that rewrite plaintext HTTP responses.
+		if cm.cfg.HoneypotCheck && !honeypotClean(ctx, client, honeypotURL, honeypotExpect) {
+			return 0, "", false
+		}
 		return rt, tier, true
 	}
 	return 0, "", false
+}
+
+// honeypotClean fetches the plaintext canary through the proxy client and reports whether
+// the body is untampered. It is FALSE-POSITIVE-SAFE: a transport error or non-200 (the
+// endpoint being unreachable/flaky through this proxy) returns true (don't penalize) — only
+// a clean 200 whose body differs from the expected canary is treated as tampering.
+func honeypotClean(ctx context.Context, client *http.Client, url, expect string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return true
+	}
+	setHeaders(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return true
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return true
+	}
+	return strings.TrimSpace(string(body)) == expect
 }
 
 // refreshCacheFromDB rebuilds the in-memory cache (read by the relay selector and the

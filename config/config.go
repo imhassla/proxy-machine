@@ -53,6 +53,11 @@ type Config struct {
 	// before giving up (bounds the round-robin walk over a DB full of dead proxies).
 	MaxFailover int
 
+	// ChainLength routes each CONNECT/SOCKS tunnel through this many proxies in sequence
+	// (nested handshakes) for extra anonymity. 1 (default) = single hop. Higher = slower and
+	// more fragile (all hops must be alive), so keep it small.
+	ChainLength int
+
 	// StickyHeader, when set, enables session affinity: relay requests carrying this header
 	// are pinned to the upstream they last succeeded through (empty → sticky disabled).
 	// StickyTTL is the sliding idle lifetime of a pin.
@@ -62,6 +67,11 @@ type Config struct {
 	// Sources, when non-empty, REPLACES the built-in public proxy-list URLs the checker
 	// harvests from. Each source's type is inferred from its URL (http/socks4/socks5).
 	Sources []string
+
+	// HoneypotCheck, when true, runs a plaintext content canary through each proxy that
+	// otherwise validated, rejecting proxies that TAMPER with the response body (ad/script
+	// injection). TLS-MITM proxies are already rejected by strict target-cert verification.
+	HoneypotCheck bool
 
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
@@ -83,15 +93,17 @@ func Load(args []string) (*Config, error) {
 		APIAddr:            "127.0.0.1:8000",
 		SocksAddr:          "127.0.0.1:1080",
 		MaxFailover:        5,
+		ChainLength:        1,
 		StickyTTL:          10 * time.Minute,
 		MaxProxyAge:        24 * time.Hour,
 		MaxRecheckInterval: 15 * time.Minute,
+		HoneypotCheck:      true,
 	}
 
 	var configPath string
-	var workers, maxFailover int
+	var workers, maxFailover, chainLength int
 	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge, maxRecheckInterval time.Duration
-	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg string
+	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
@@ -106,9 +118,11 @@ func Load(args []string) (*Config, error) {
 	fs.StringVar(&apiAddr, "apiAddr", "", "API listen address (default 127.0.0.1:8000)")
 	fs.StringVar(&socksAddr, "socksAddr", "", "Client SOCKS5 listen address (default 127.0.0.1:1080; 'off' to disable)")
 	fs.IntVar(&maxFailover, "maxFailover", -1, "Max upstream proxies tried per request (default 5)")
+	fs.IntVar(&chainLength, "chainLength", -1, "Route each tunnel through N chained proxies (default 1 = single hop)")
 	fs.StringVar(&stickyHeader, "stickyHeader", "", "Request header for session affinity (empty = off)")
 	fs.DurationVar(&stickyTTL, "stickyTTL", -1, "Sliding TTL of a sticky-session pin (default 10m)")
 	fs.StringVar(&sourcesArg, "sources", "", "Comma-separated proxy-list URLs (replaces the built-in sources)")
+	fs.StringVar(&honeypotArg, "honeypot", "", "Content-tamper detection: true|false (default true)")
 	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
 	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
 
@@ -159,6 +173,9 @@ func Load(args []string) (*Config, error) {
 	if maxFailover >= 0 {
 		cfg.MaxFailover = maxFailover
 	}
+	if chainLength >= 1 {
+		cfg.ChainLength = chainLength
+	}
 	if stickyHeader != "" {
 		cfg.StickyHeader = stickyHeader
 	}
@@ -167,6 +184,9 @@ func Load(args []string) (*Config, error) {
 	}
 	if sourcesArg != "" {
 		cfg.Sources = splitCommaTrim(sourcesArg)
+	}
+	if honeypotArg != "" {
+		cfg.HoneypotCheck = honeypotArg == "true" || honeypotArg == "1" || honeypotArg == "yes"
 	}
 	if proxyUser != "" {
 		cfg.ProxyUser = proxyUser
@@ -207,9 +227,11 @@ type fileConfig struct {
 	APIAddr            *string   `json:"apiAddr"`
 	SocksAddr          *string   `json:"socksAddr"`
 	MaxFailover        *int      `json:"maxFailover"`
+	ChainLength        *int      `json:"chainLength"`
 	StickyHeader       *string   `json:"stickyHeader"`
 	StickyTTL          *string   `json:"stickyTTL"`
 	Sources            *[]string `json:"sources"`
+	HoneypotCheck      *bool     `json:"honeypotCheck"`
 	ProxyUser          *string   `json:"proxyUser"`
 	ProxyPass          *string   `json:"proxyPass"`
 }
@@ -314,6 +336,14 @@ func loadINI(data []byte, cfg *Config) error {
 			if fc.MaxFailover == nil {
 				fc.MaxFailover = &v
 			}
+		case "chainlength":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("invalid chainLength value %q: %w", val, err)
+			}
+			if fc.ChainLength == nil {
+				fc.ChainLength = &v
+			}
 		case "stickyheader":
 			if fc.StickyHeader == nil {
 				fc.StickyHeader = &val
@@ -322,6 +352,11 @@ func loadINI(data []byte, cfg *Config) error {
 			if fc.Sources == nil {
 				s := splitCommaTrim(val)
 				fc.Sources = &s
+			}
+		case "honeypotcheck":
+			if fc.HoneypotCheck == nil {
+				b := val == "true" || val == "1" || val == "yes"
+				fc.HoneypotCheck = &b
 			}
 		case "stickyttl":
 			if fc.StickyTTL == nil {
@@ -395,6 +430,12 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 		}
 		cfg.MaxFailover = *fc.MaxFailover
 	}
+	if fc.ChainLength != nil {
+		if *fc.ChainLength < 1 {
+			return fmt.Errorf("chainLength must be >= 1")
+		}
+		cfg.ChainLength = *fc.ChainLength
+	}
 	if fc.StickyHeader != nil {
 		cfg.StickyHeader = *fc.StickyHeader
 	}
@@ -407,6 +448,9 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 	}
 	if fc.Sources != nil {
 		cfg.Sources = *fc.Sources
+	}
+	if fc.HoneypotCheck != nil {
+		cfg.HoneypotCheck = *fc.HoneypotCheck
 	}
 	if fc.MaxProxyAge != nil {
 		d, err := time.ParseDuration(*fc.MaxProxyAge)

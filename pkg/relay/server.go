@@ -50,6 +50,7 @@ type Server struct {
 	pool         *transportPool
 	timeout      time.Duration
 	maxAttempts  int // upstream proxies tried per request before giving up
+	chainLength  int // proxies to chain per tunnel (1 = single hop)
 	socks        *SocksServer
 	metrics      *metrics.Metrics
 	stickyHeader string
@@ -84,6 +85,7 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB, m *
 		pass:        cfg.ProxyPass,
 		timeout:     timeout,
 		maxAttempts: maxAttempts,
+		chainLength: cfg.ChainLength,
 		metrics:     m,
 		done:        make(chan struct{}),
 	}
@@ -548,6 +550,34 @@ func (s *Server) dialTunnel(ctx context.Context, target, preferred string) (net.
 	if attemptTimeout <= 0 || attemptTimeout > perAttemptDial {
 		attemptTimeout = perAttemptDial
 	}
+
+	// Chained mode: route each tunnel through chainLength distinct proxies. Each attempt
+	// consumes a fresh disjoint group from the ordered candidates.
+	if s.chainLength > 1 {
+		var lastErr error
+		attempts := 0
+		for base := 0; base+s.chainLength <= len(cands) && attempts < maxAttempts; base += s.chainLength {
+			chain := cands[base : base+s.chainLength]
+			start := time.Now()
+			conn, derr := dialChain(ctx, chain, target, attemptTimeout)
+			// Attribute the outcome to every hop (can't tell which failed); the circuit
+			// breaker's grace absorbs the occasional innocent penalty.
+			for _, c := range chain {
+				s.selector.report(c, derr == nil, time.Since(start))
+				s.metrics.AddUpstream(derr == nil)
+			}
+			if derr == nil {
+				return conn, chain[0], nil
+			}
+			lastErr = derr
+			attempts++
+		}
+		if lastErr != nil {
+			return nil, "", lastErr
+		}
+		return nil, "", ErrNoProxyAvailable
+	}
+
 	var lastErr error
 	attempts := 0
 	for _, cand := range cands {
