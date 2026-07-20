@@ -118,13 +118,16 @@ func (h *health) retain(keep map[string]struct{}) {
 
 // rank buckets a candidate for ordering (lower is preferred):
 //
-//	0 = alive-and-not-slow, OR unknown (no history) — tried first, in round-robin order
-//	1 = alive but slow (EWMA > slowLatency) — demoted below fast/unknown
-//	2 = circuit open (recent failure run) — tried last, so recovery is still possible
+//	0 = proven-good (recent success, not slow) OR unknown — tried first, in round-robin order
+//	1 = one/two recent failures, or slow — deprioritized (tried after the good/unknown set)
+//	2 = circuit open (a run of failures) — tried last, so recovery is still possible
 //
-// It deliberately does NOT order class 0 by latency: that would pin traffic to the single
-// fastest proxy and kill the relay's IP rotation. Health here means avoid dead/slow, not
-// always-pick-fastest.
+// A SINGLE failure drops a proxy to class 1 immediately (not just after the circuit trips at
+// failThreshold), so the relay spreads across the actually-working set faster and rotation
+// stays diverse — instead of failing over to the same lone survivor on every request while a
+// sea of dead proxies still sits in class 0. Any success resets it back to class 0. It does
+// NOT order class 0 by latency (that would pin traffic to the single fastest proxy and kill
+// IP rotation).
 func (h *health) rank(addr string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -134,13 +137,13 @@ func (h *health) rank(addr string) int {
 func (h *health) rankLocked(addr string, now time.Time) int {
 	s := h.m[addr]
 	if s == nil {
-		return 0 // unknown → optimistic, rotate with the healthy ones
+		return 0 // unknown → optimistic, rotate with the good ones
 	}
 	if s.openUntil.After(now) {
 		return 2
 	}
-	if s.hasData && s.ewma > slowLatency {
-		return 1
+	if s.fails > 0 || (s.hasData && s.ewma > slowLatency) {
+		return 1 // recent failure or slow → try after the fresh/proven set
 	}
 	return 0
 }

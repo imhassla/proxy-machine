@@ -33,8 +33,8 @@ try() { local n=$1; shift; local out; for _ in $(seq 1 "$n"); do out=$("$@" 2>/d
 hr "HTTPS through the RELAY (CONNECT)  ->  ipwho.is (asn/isp/country) [TLS = injection-proof]"
 try 4 curl -s -m $CT -x http://$RELAY https://ipwho.is/ | pp
 
-hr "SOCKS5 listener  ->  ipinfo.io"
-try 4 curl -s -m $CT --socks5-hostname $SOCKS https://ipinfo.io/json | pp
+hr "SOCKS5 listener  ->  ifconfig.co (ip + asn + country)"
+try 4 curl -s -m $CT --socks5-hostname $SOCKS https://ifconfig.co/json | pp
 
 hr "PLAINTEXT-HTTP through relay  ->  ip-api.com  [may return an INJECTED page — free-proxy hazard]"
 try 4 curl -s -m $CT -x http://$RELAY http://ip-api.com/json | pp

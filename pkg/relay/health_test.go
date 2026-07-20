@@ -33,8 +33,8 @@ func TestHealthCircuitBreaker(t *testing.T) {
 	}
 }
 
-// The circuit reopens... err, recovers after the cooldown window elapses even without a
-// success: rank returns to 0 once now passes openUntil.
+// After the cooldown the circuit leaves rank 2, but an unproven (still-failed) proxy sits at
+// rank 1 (deprioritized retry) — a success is what restores it to rank 0.
 func TestHealthCircuitCooldownExpiry(t *testing.T) {
 	now := time.Unix(2000, 0)
 	h := newHealth()
@@ -47,8 +47,26 @@ func TestHealthCircuitCooldownExpiry(t *testing.T) {
 		t.Fatal("expected open circuit")
 	}
 	now = now.Add(circuitCooldown + time.Second)
+	if got := h.rank(bad); got != 1 {
+		t.Fatalf("after cooldown rank = %d, want 1 (deprioritized retry)", got)
+	}
+	h.report(bad, true, 50*time.Millisecond) // a success restores it
 	if got := h.rank(bad); got != 0 {
-		t.Fatalf("after cooldown rank = %d, want 0", got)
+		t.Fatalf("after recovery success rank = %d, want 0", got)
+	}
+}
+
+// A single failure immediately deprioritizes a proxy (rank 1) — before the circuit trips —
+// so the relay spreads across working proxies instead of hammering one survivor.
+func TestHealthSingleFailDeprioritizes(t *testing.T) {
+	h := newHealth()
+	h.report("http://x:80", false, 0)
+	if got := h.rank("http://x:80"); got != 1 {
+		t.Fatalf("one failure rank = %d, want 1", got)
+	}
+	h.report("http://x:80", true, 20*time.Millisecond) // recovery resets to rank 0
+	if got := h.rank("http://x:80"); got != 0 {
+		t.Fatalf("after success rank = %d, want 0", got)
 	}
 }
 
