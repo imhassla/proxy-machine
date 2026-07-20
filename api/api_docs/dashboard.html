@@ -144,6 +144,8 @@
 
     .dimmed { color: #007020; }
     .error  { color: #ff4400; }
+    .ok     { color: #33ff66; }
+    .warn   { color: #ffb000; }
   </style>
 </head>
 <body>
@@ -165,41 +167,46 @@
 
   <div class="statusbar">
     <span id="status-msg" class="dimmed">INITIALIZING...</span>
+    <span id="relay-line" class="dimmed">RELAY: —</span>
     <span>POLL: 3s&nbsp;&nbsp;<span class="cursor"></span></span>
   </div>
 
   <div class="panels">
 
-    <!-- Panel 1: Proxy Counts -->
+    <!-- Proxy Counts by type -->
     <div class="panel">
       <div class="panel-title">┌─ PROXY COUNTS ─────────────────────────────</div>
-      <div class="panel-body" id="proxy-counts">
-        <span class="dimmed">loading...</span>
-      </div>
+      <div class="panel-body" id="proxy-counts"><span class="dimmed">loading...</span></div>
     </div>
 
-    <!-- Panel 2: Relay Counters -->
+    <!-- Anonymity tiers -->
     <div class="panel">
-      <div class="panel-title">┌─ RELAY COUNTERS ───────────────────────────</div>
-      <div class="panel-body" id="relay-counters">
-        <span class="dimmed">loading...</span>
-      </div>
+      <div class="panel-title">┌─ ANONYMITY ────────────────────────────────</div>
+      <div class="panel-body" id="anon"><span class="dimmed">loading...</span></div>
     </div>
 
-    <!-- Panel 3: Upstream Health (full-width) -->
-    <div class="panel panel-full">
-      <div class="panel-title">┌─ UPSTREAM HEALTH ──────────────────────────────────────────────────────</div>
-      <div class="panel-body" id="upstreams">
-        <span class="dimmed">loading...</span>
-      </div>
+    <!-- Speed / latency distribution -->
+    <div class="panel">
+      <div class="panel-title">┌─ SPEED DISTRIBUTION ───────────────────────</div>
+      <div class="panel-body" id="speed"><span class="dimmed">loading...</span></div>
     </div>
 
-    <!-- Panel 4: Recent Proxies sample (full-width) -->
+    <!-- Top countries (geo enrichment) -->
+    <div class="panel">
+      <div class="panel-title">┌─ TOP COUNTRIES ────────────────────────────</div>
+      <div class="panel-body" id="geo"><span class="dimmed">loading...</span></div>
+    </div>
+
+    <!-- Fastest proxies (full-width) -->
     <div class="panel panel-full">
-      <div class="panel-title">┌─ RECENT HTTP PROXIES (sample, no age filter) ──────────────────────────</div>
-      <div class="panel-body" id="recent-proxies">
-        <span class="dimmed">loading...</span>
-      </div>
+      <div class="panel-title">┌─ FASTEST PROXIES ──────────────────────────────────────────────────────</div>
+      <div class="panel-body" id="fastest"><span class="dimmed">loading...</span></div>
+    </div>
+
+    <!-- Upstream Health (full-width, live during relay use) -->
+    <div class="panel panel-full">
+      <div class="panel-title">┌─ UPSTREAM HEALTH (live relay) ─────────────────────────────────────────</div>
+      <div class="panel-body" id="upstreams"><span class="dimmed">loading...</span></div>
     </div>
 
   </div>
@@ -244,22 +251,76 @@
     el.innerHTML = html;
   }
 
-  function renderRelayCounters(relay) {
-    var el = document.getElementById('relay-counters');
-    if (!relay) { el.innerHTML = '<span class="error">no data</span>'; return; }
-    var rows = [
-      ['HTTP Requests',    relay.relay_http_requests    || 0],
-      ['CONNECT Requests', relay.relay_connect_requests || 0],
-      ['SOCKS Requests',   relay.relay_socks_requests   || 0],
-      ['Relay Failures',   relay.relay_failures         || 0],
-      ['Upstream Attempts',relay.upstream_attempts      || 0],
-      ['Upstream Failures',relay.upstream_failures      || 0],
-    ];
-    var html = '<table class="kv-table">';
+  // Relay counters folded into a compact status-bar line (were a whole panel of static 0s).
+  function renderRelayLine(relay) {
+    var el = document.getElementById('relay-line');
+    if (!relay) { el.textContent = 'RELAY: —'; return; }
+    var reqs = (relay.relay_http_requests || 0) + (relay.relay_connect_requests || 0) + (relay.relay_socks_requests || 0);
+    el.textContent = 'RELAY: ' + reqs + ' reqs · ' + (relay.relay_failures || 0) + ' fail · up ' +
+      (relay.upstream_attempts || 0) + '/' + (relay.upstream_failures || 0) + ' fail';
+  }
+
+  // barRows renders a list of [label, count, cssClass?] as labelled bars scaled to the max.
+  function barRows(el, rows) {
+    var maxVal = 0;
+    rows.forEach(function(r) { if (r[1] > maxVal) maxVal = r[1]; });
+    var html = '';
     rows.forEach(function(r) {
-      html += '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>';
+      html += '<div class="bar-row">';
+      html += '<span class="bar-label ' + (r[2] || '') + '">' + r[0] + '</span>';
+      html += '<span class="bar-track ' + (r[2] || '') + '">' + bar(r[1], maxVal) + '</span>';
+      html += '<span class="bar-count">' + r[1] + '</span>';
+      html += '</div>';
     });
-    html += '</table>';
+    el.innerHTML = html || '<span class="dimmed">no data</span>';
+  }
+
+  function renderAnon(anon) {
+    var el = document.getElementById('anon');
+    if (!anon) { el.innerHTML = '<span class="dimmed">no data</span>'; return; }
+    barRows(el, [
+      ['ELITE',     anon.elite     || 0, 'ok'],
+      ['ANONYMOUS', anon.anonymous || 0, ''],
+      ['UNKNOWN',   anon.unknown   || 0, 'dimmed'],
+    ]);
+  }
+
+  function renderSpeed(speed) {
+    var el = document.getElementById('speed');
+    if (!speed || !Array.isArray(speed)) { el.innerHTML = '<span class="dimmed">no data</span>'; return; }
+    barRows(el, speed.map(function(b, i) {
+      return [b.label, b.count || 0, i <= 1 ? 'ok' : (i >= 3 ? 'warn' : '')];
+    }));
+  }
+
+  function renderGeo(geo) {
+    var el = document.getElementById('geo');
+    if (!geo || !Array.isArray(geo) || geo.length === 0) {
+      el.innerHTML = '<span class="dimmed">enriching (geo lookup runs in the background)...</span>';
+      return;
+    }
+    barRows(el, geo.slice(0, 8).map(function(g) { return [g.country || '??', g.count || 0, '']; }));
+  }
+
+  function renderFastest(list) {
+    var el = document.getElementById('fastest');
+    if (!list || !Array.isArray(list) || list.length === 0) {
+      el.innerHTML = '<span class="dimmed">no proxies yet</span>';
+      return;
+    }
+    var html = '<table class="up-table"><thead><tr><th>ADDRESS</th><th>TYPE</th><th>RT(ms)</th><th>TIER</th><th>GEO</th></tr></thead><tbody>';
+    list.forEach(function(p) {
+      var ms = (p.response_time != null) ? (p.response_time * 1000).toFixed(0) : 'n/a';
+      var tierClass = p.anon === 'elite' ? 'ok' : (p.anon === 'unknown' || !p.anon ? 'dimmed' : '');
+      html += '<tr>';
+      html += '<td>' + (p.proxy || '') + '</td>';
+      html += '<td>' + (p.type || '') + '</td>';
+      html += '<td>' + ms + '</td>';
+      html += '<td class="' + tierClass + '">' + (p.anon || 'unknown') + '</td>';
+      html += '<td>' + (p.geo || '') + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
     el.innerHTML = html;
   }
 
@@ -291,64 +352,42 @@
     el.innerHTML = html;
   }
 
-  function renderRecentProxies(data) {
-    var el = document.getElementById('recent-proxies');
-    if (!data || !Array.isArray(data)) {
-      el.innerHTML = '<span class="error">no data</span>';
-      return;
-    }
-    if (data.length === 0) {
-      el.innerHTML = '<span class="dimmed">no http proxies in store</span>';
-      return;
-    }
-    var sample = data.slice(0, 5);
-    var html = '<div class="proxy-row dimmed"><span class="proxy-addr">ADDRESS</span><span class="proxy-rt">RT(s)</span><span class="proxy-anon">ANON</span></div>';
-    sample.forEach(function(p) {
-      html += '<div class="proxy-row">';
-      html += '<span class="proxy-addr">' + (p.proxy || '') + '</span>';
-      html += '<span class="proxy-rt">' + (p.response_time != null ? p.response_time.toFixed(3) : 'n/a') + '</span>';
-      html += '<span class="proxy-anon">' + (p.anon || 'unknown') + '</span>';
-      html += '</div>';
-    });
-    if (data.length > 5) {
-      html += '<div class="dimmed" style="margin-top:4px;font-size:11px;">... and ' + (data.length - 5) + ' more</div>';
-    }
-    el.innerHTML = html;
-  }
-
-  function poll() {
+  function poll(withInsights) {
     var now = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 
-    // Fetch /stats
+    // /stats — cheap: counts + relay line. Every tick.
     fetch('/stats')
       .then(function(r) { return r.json(); })
       .then(function(d) {
         renderProxyCounts(d.proxies);
-        renderRelayCounters(d.relay);
+        renderRelayLine(d.relay);
         setStatus('LAST POLL: ' + now, false);
       })
-      .catch(function(e) {
-        setStatus('STATS FETCH ERROR: ' + e.message, true);
-      });
+      .catch(function(e) { setStatus('STATS FETCH ERROR: ' + e.message, true); });
 
-    // Fetch /upstreams (may 404 if relay not wired)
+    // /upstreams — live relay health (404 if relay not wired). Every tick.
     fetch('/upstreams')
-      .then(function(r) {
-        if (r.status === 404) return null;
-        return r.json();
-      })
+      .then(function(r) { return r.status === 404 ? null : r.json(); })
       .then(function(d) { renderUpstreams(d); })
       .catch(function() { renderUpstreams(null); });
 
-    // Fetch recent http proxies
-    fetch('/proxy/http?format=json&minutes=0')
-      .then(function(r) { return r.json(); })
-      .then(function(d) { renderRecentProxies(d); })
-      .catch(function() { renderRecentProxies(null); });
+    // /insights — heavier pool scan (anon / speed / geo / fastest). Every 3rd tick.
+    if (withInsights) {
+      fetch('/insights')
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          renderAnon(d.anon);
+          renderSpeed(d.speed);
+          renderGeo(d.geo);
+          renderFastest(d.fastest);
+        })
+        .catch(function() {});
+    }
   }
 
-  poll();
-  setInterval(poll, 3000);
+  poll(true);
+  var tick = 0;
+  setInterval(function() { tick++; poll(tick % 3 === 0); }, 3000);
 })();
 </script>
 </body>

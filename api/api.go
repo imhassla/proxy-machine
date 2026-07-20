@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,7 @@ func New(addr string, manager *checker.CheckManager, database *db.DB, m *metrics
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ready", s.handleReady)
 	mux.HandleFunc("/stats", s.handleStats)
+	mux.HandleFunc("/insights", s.handleInsights)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/upstreams", s.handleUpstreams)
 	s.srv = &http.Server{
@@ -186,6 +188,80 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		Proxies: s.proxyCounts(),
 		Relay:   s.metrics.Snapshot(),
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// speedBuckets defines the latency histogram edges (seconds) for /insights.
+var speedBuckets = []struct {
+	label string
+	max   float64
+}{
+	{"<0.3s", 0.3}, {"0.3-1s", 1}, {"1-2s", 2}, {"2-5s", 5}, {">5s", 1e9},
+}
+
+// handleInsights aggregates the stored pool into dashboard-friendly views: anonymity-tier
+// counts, a latency histogram, and the fastest proxies. Separate from /stats so the frequent
+// counts poll stays cheap while this heavier scan is polled less often.
+func (s *Server) handleInsights(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type fastProxy struct {
+		Proxy        string  `json:"proxy"`
+		Type         string  `json:"type"`
+		ResponseTime float64 `json:"response_time"`
+		Anon         string  `json:"anon"`
+	}
+	type bucket struct {
+		Label string `json:"label"`
+		Count int    `json:"count"`
+	}
+
+	anon := map[string]int{"elite": 0, "anonymous": 0, "unknown": 0}
+	speed := make([]int, len(speedBuckets))
+	var fastest []fastProxy
+
+	if s.db != nil {
+		for _, t := range serveTypes {
+			rows, err := s.db.GetProxyRows(t) // fastest-first
+			if err != nil {
+				continue
+			}
+			for i, row := range rows {
+				tier := row.Anon
+				if _, ok := anon[tier]; !ok {
+					tier = "unknown"
+				}
+				anon[tier]++
+				for b := range speedBuckets {
+					if row.ResponseTime < speedBuckets[b].max {
+						speed[b]++
+						break
+					}
+				}
+				if i < 10 { // per-type fastest; merged + trimmed below
+					fastest = append(fastest, fastProxy{row.Proxy, t, row.ResponseTime, tier})
+				}
+			}
+		}
+	}
+	sort.Slice(fastest, func(i, j int) bool { return fastest[i].ResponseTime < fastest[j].ResponseTime })
+	if len(fastest) > 10 {
+		fastest = fastest[:10]
+	}
+	buckets := make([]bucket, len(speedBuckets))
+	for i := range speedBuckets {
+		buckets[i] = bucket{speedBuckets[i].label, speed[i]}
+	}
+
+	out := struct {
+		Anon    map[string]int `json:"anon"`
+		Speed   []bucket       `json:"speed"`
+		Fastest []fastProxy    `json:"fastest"`
+	}{anon, buckets, fastest}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(out)
