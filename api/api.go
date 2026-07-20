@@ -410,9 +410,16 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid anon: %q (elite|anonymous|transparent|unknown)", anon), http.StatusBadRequest)
 		return
 	}
+	// geo filters (from the background enrichment): country = 2-letter code (case-insensitive),
+	// asn = case-insensitive substring of the "AS<n> <org>" string. Empty = any.
+	country := strings.ToUpper(r.URL.Query().Get("country"))
+	asn := strings.ToLower(r.URL.Query().Get("asn"))
 
 	// An empty result is 200 with an empty body (a valid "no proxies match"), not 404.
 	rows := s.collectRows(proxyType, maxResp, minutes, anon)
+	if country != "" || asn != "" {
+		rows = s.filterByGeo(rows, country, asn)
+	}
 	// pick = return a single rotating proxy (on-demand rotation); session pins it.
 	if isTruthy(r.URL.Query().Get("pick")) || r.URL.Query().Get("session") != "" {
 		rows = s.pickOne(proxyType, rows, r.URL.Query().Get("session"), isTruthy(r.URL.Query().Get("rotate")))
@@ -552,6 +559,38 @@ func (s *Server) collectRows(proxyType string, maxResp float64, minutes int, ano
 		return out
 	}
 	return nil
+}
+
+// filterByGeo keeps only rows whose IP (via the enriched _geo table) matches the country
+// code and/or ASN substring. Rows without geo data are dropped when a geo filter is active
+// (we can't confirm a match). country is upper-case, asn lower-case.
+func (s *Server) filterByGeo(rows []db.ProxyRow, country, asn string) []db.ProxyRow {
+	if s.db == nil || len(rows) == 0 {
+		return nil
+	}
+	ips := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ips = append(ips, hostOnly(r.Proxy))
+	}
+	geo, err := s.db.GeoByIPs(ips)
+	if err != nil {
+		return rows // enrichment unavailable — don't hard-fail the query
+	}
+	out := make([]db.ProxyRow, 0, len(rows))
+	for _, r := range rows {
+		g, ok := geo[hostOnly(r.Proxy)]
+		if !ok {
+			continue // not yet enriched → can't match a geo filter
+		}
+		if country != "" && strings.ToUpper(g.CountryCode) != country {
+			continue
+		}
+		if asn != "" && !strings.Contains(strings.ToLower(g.ASN), asn) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 func isValidProxyType(t string) bool {

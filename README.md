@@ -114,6 +114,9 @@ them via `CONNECT` (see `checker/https_smoke_test.go` for the proof).
   (proxy detectable but your IP hidden), or `unknown` (validated but not classified —
   the header-reflecting endpoint wasn't reached). Transparent proxies (that leak your IP)
   are never stored. Empty = any tier.
+- `country` — 2-letter country code (e.g. `US`), and `asn` — case-insensitive substring of
+  the `AS<n> <org>` string (e.g. `asn=cloudflare`). Both use the background geo enrichment
+  (only enriched proxies match).
 - `format` — `json` (array of `{proxy,response_time,last_checked,anon}`, fastest first),
   `text`, `csv`, `curl` (paste-ready `curl -x` lines), or `proxychains` (`[ProxyList]` lines)
 - `pick=1` — return a single round-robin proxy; `session=ID` pins that session to one proxy

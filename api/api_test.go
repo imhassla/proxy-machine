@@ -306,3 +306,37 @@ func TestServer_Dashboard(t *testing.T) {
 		t.Error("GET /dashboard: marker comment '<!-- PROXY-MACHINE DASHBOARD -->' not found in response body")
 	}
 }
+
+func TestGeoFilter(t *testing.T) {
+	d, _ := db.OpenInMemory()
+	defer d.Close()
+	if err := d.Init(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_ = d.StoreProxy("http", "1.1.1.1:80", 0.1, now)
+	_ = d.StoreProxy("http", "2.2.2.2:80", 0.2, now)
+	_ = d.StoreGeo([]db.GeoRow{
+		{IP: "1.1.1.1", Country: "United States", CountryCode: "US", ASN: "AS13335 Cloudflare"},
+		{IP: "2.2.2.2", Country: "Germany", CountryCode: "DE", ASN: "AS3320 DTAG"},
+	}, now)
+	s := New("127.0.0.1:0", nil, d, nil)
+
+	get := func(q string) string {
+		rec := httptest.NewRecorder()
+		s.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/http?minutes=0&format=text&"+q, nil))
+		return strings.TrimSpace(rec.Body.String())
+	}
+	if got := get("country=US"); got != "1.1.1.1:80" {
+		t.Errorf("country=US = %q, want 1.1.1.1:80", got)
+	}
+	if got := get("country=DE"); got != "2.2.2.2:80" {
+		t.Errorf("country=DE = %q, want 2.2.2.2:80", got)
+	}
+	if got := get("asn=cloudflare"); got != "1.1.1.1:80" {
+		t.Errorf("asn=cloudflare = %q, want 1.1.1.1:80", got)
+	}
+	if got := get("country=FR"); got != "" {
+		t.Errorf("country=FR = %q, want empty", got)
+	}
+}

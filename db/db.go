@@ -630,7 +630,8 @@ func (d *DB) CountByNetwork() ([]struct {
 	return out, rows.Err()
 }
 
-// GeoByIPs returns geo rows for the given IPs (missing IPs simply absent from the map).
+// GeoByIPs returns geo rows for the given IPs (missing IPs simply absent from the map). It
+// queries in chunked `IN (...)` batches so filtering a large pool by geo stays fast.
 func (d *DB) GeoByIPs(ips []string) (map[string]GeoRow, error) {
 	out := map[string]GeoRow{}
 	if d.conn == nil || len(ips) == 0 {
@@ -639,24 +640,33 @@ func (d *DB) GeoByIPs(ips []string) (map[string]GeoRow, error) {
 	if err := d.EnsureGeoTable(); err != nil {
 		return nil, err
 	}
-	// Query one at a time via a prepared statement (IP lists are small — the API's fastest
-	// list is ≤10, a country filter dedups first). Keeps the SQL simple and injection-free.
-	stmt, err := d.conn.Prepare("SELECT country, country_code, asn, isp FROM _geo WHERE ip = ?")
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-	for _, ip := range ips {
-		var g GeoRow
-		g.IP = ip
-		err := stmt.QueryRow(ip).Scan(&g.Country, &g.CountryCode, &g.ASN, &g.ISP)
-		if err == sql.ErrNoRows {
-			continue
+	const chunk = 400 // stay well under SQLite's parameter limit
+	for start := 0; start < len(ips); start += chunk {
+		end := start + chunk
+		if end > len(ips) {
+			end = len(ips)
 		}
+		batch := ips[start:end]
+		ph := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for i, ip := range batch {
+			ph[i] = "?"
+			args[i] = ip
+		}
+		q := "SELECT ip, country, country_code, asn, isp FROM _geo WHERE ip IN (" + strings.Join(ph, ",") + ")"
+		rows, err := d.conn.Query(q, args...)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("geo by ips: %w", err)
 		}
-		out[ip] = g
+		for rows.Next() {
+			var g GeoRow
+			if err := rows.Scan(&g.IP, &g.Country, &g.CountryCode, &g.ASN, &g.ISP); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[g.IP] = g
+		}
+		rows.Close()
 	}
 	return out, nil
 }
