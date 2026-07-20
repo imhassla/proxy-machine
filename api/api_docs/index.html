@@ -144,25 +144,48 @@
         <a href="/dashboard">[DASHBOARD]</a>
     </nav>
     <h1>Proxy-Machine API Documentation</h1>
-    <p>This API provides a list of proxies filtered based on their response time and the last time they were checked.</p>
-    <h2>Supported Proxy Types</h2>
+    <p>Harvest &rarr; validate (anonymity-classified, geo/ASN-enriched) &rarr; store &rarr; serve.
+       The API is read-only; the rotating relay (<code>:3333</code>) and SOCKS5 listener
+       (<code>:1080</code>) egress through the validated pool. All endpoints are same-origin.</p>
+
+    <h2>GET /proxy/{type}</h2>
+    <p>Returns validated proxies of <code>type</code> &isin; <code>http | https | socks4 | socks5</code>,
+       fastest first. An empty match is <code>200</code> with an empty body. Query params:</p>
     <ul>
-        <li><b>HTTP</b> </li>
-        <li><b>HTTPS</b> </li>
-        <li><b>SOCKS4</b> </li>
-        <li><b>SOCKS5</b> </li>
+        <li><b>time</b> — max response time in seconds, e.g. <code>?time=1.5</code></li>
+        <li><b>minutes</b> — max age since last check (default <code>30</code>; <code>0</code> disables)</li>
+        <li><b>format</b> — <code>json</code> (default) | <code>text</code> | <code>csv</code> |
+            <code>curl</code> (paste-ready <code>curl -x</code> lines) | <code>proxychains</code></li>
+        <li><b>anon</b> — anonymity tier: <code>elite</code> | <code>anonymous</code> | <code>unknown</code>
+            (transparent proxies are never stored)</li>
+        <li><b>country</b> — 2-letter code, e.g. <code>?country=US</code> (needs geo enrichment)</li>
+        <li><b>asn</b> — substring of "AS&lt;n&gt; org", e.g. <code>?asn=cloudflare</code></li>
+        <li><b>pick=1</b> — return ONE round-robin proxy; <b>session=ID</b> pins a session to one
+            proxy (sliding TTL); add <b>rotate=1</b> to force a fresh pick</li>
     </ul>
-    <h2>GET /proxy/{proxy_type}</h2>
-    <p>Returns a list of proxies of the specified type.</p>
+    <p>Examples:
+        <a href="#" onclick="window.location.href=getServerUrl()+'/proxy/http?minutes=0&format=text'">/proxy/http?minutes=0&amp;format=text</a> ·
+        <a href="#" onclick="window.location.href=getServerUrl()+'/proxy/socks5?country=US&anon=elite'">/proxy/socks5?country=US&amp;anon=elite</a> ·
+        <a href="#" onclick="window.location.href=getServerUrl()+'/proxy/http?format=curl&minutes=0'">/proxy/http?format=curl</a>
+    </p>
+
+    <h2>Integration &amp; observability</h2>
     <ul>
-        <li><b>proxy_type</b>: The type of proxy. </li>
-        <p>This can be either 'http', 'https', 'socks4' or 'socks5'. For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http'">/proxy/http</a> will return HTTP proxies.</p>
-        <li><b>time</b>: The maximum response time of the proxies in seconds. </li>
-        <p>For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http?time=1.5'">/proxy/http?time=1.5</a> will return proxies with a response time of 1.5 seconds or less.</p>
-        <li><b>minutes</b>: The maximum number of minutes since the last check of the proxies. </li>
-        <p>For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http?time=3&minutes=5'">/proxy/http?time=3&minutes=5</a> will return proxies with a response time of 3 seconds or less that were checked within the last 5 minutes.</p>
-        <li><b>format</b>: The format of the response. </li>
-        <p>This can be either 'json' or 'text'. For example, <a href="#" onclick="window.location.href = getServerUrl() + '/proxy/http?time=3&minutes=5&format=text'">/proxy/http?time=3&minutes=5&format=text</a> will return the proxies as a plain text list.</p>
+        <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/proxy.pac'">GET /proxy.pac</a></b>
+            — browser proxy auto-config (relay + fastest http fallbacks)</li>
+        <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/stats'">GET /stats</a></b>
+            — JSON: proxy counts per type + relay counters</li>
+        <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/insights'">GET /insights</a></b>
+            — JSON: anonymity tiers, latency histogram, top countries &amp; networks (ASN), fastest proxies</li>
+        <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/upstreams'">GET /upstreams</a></b>
+            — JSON: live relay upstream health (ewma latency, consecutive fails, circuit state)</li>
+        <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/metrics'">GET /metrics</a></b>
+            — Prometheus text format</li>
+        <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/ready'">GET /ready</a></b>
+            — <code>200</code> once &ge;1 validated upstream (readiness) ·
+            <b><a href="#" onclick="window.location.href=getServerUrl()+'/health'">GET /health</a></b>
+            — liveness</li>
+        <li><b><a href="/dashboard">GET /dashboard</a></b> — live retro dashboard</li>
     </ul>
 </body>
 </html>
