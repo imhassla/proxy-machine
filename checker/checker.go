@@ -127,6 +127,13 @@ type CheckManager struct {
 	// success resets it.
 	recheckFails map[string]int
 
+	// Adaptive recheck state (single-RunCycle-goroutine access): streak counts consecutive
+	// successes per "typ|addr"; nextRecheck holds when a stored proxy is next due for
+	// re-validation. Stable proxies get longer intervals, so they aren't rechecked every
+	// cycle. Both are cleared on a failure (recheck next cycle).
+	streak      map[string]int
+	nextRecheck map[string]time.Time
+
 	// Endpoints used for validation, each a failover list tried in order. Default to the
 	// public IP-echo / proxy-list URLs; overridable (e.g. self-hosted echoes, or to point
 	// tests at local fakes).
@@ -150,6 +157,8 @@ func New(cfg *config.Config, database *db.DB) *CheckManager {
 		cache:        make(map[string][]string),
 		directClient: &http.Client{Timeout: timeout},
 		recheckFails: make(map[string]int),
+		streak:       make(map[string]int),
+		nextRecheck:  make(map[string]time.Time),
 		IPURLs:       publicIPURLs,
 		TestURLs:     proxyTestURLs,
 		ListURLs:     publicProxyURLs,
@@ -226,6 +235,9 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 			okCount++
 			stored[r.job.typ]++
 			delete(cm.recheckFails, key) // success resets the failure streak
+			// Adaptive recheck: grow the streak and push the next-due time out.
+			cm.streak[key]++
+			cm.nextRecheck[key] = time.Now().Add(cm.recheckInterval(cm.streak[key]))
 			if cm.db != nil {
 				// last_checked at the moment of storing (not cycle start): in a long cycle
 				// a cycle-start timestamp would already be stale and get filtered by the
@@ -241,6 +253,9 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 				log.Printf("checker: progress — %d valid so far (%d/%d checked)", okCount, processed, len(jobs))
 			}
 		} else if r.job.recheck && cm.db != nil {
+			// A failure resets adaptive state so the proxy is rechecked promptly next cycle.
+			delete(cm.streak, key)
+			delete(cm.nextRecheck, key)
 			// Grace: only prune after pruneThreshold CONSECUTIVE failed rechecks, so a
 			// momentarily-flaky proxy isn't evicted (and re-harvested) on one bad cycle.
 			cm.recheckFails[key]++
@@ -253,6 +268,16 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 	}
 	for typ, dead := range prune {
 		_ = cm.db.DeleteProxies(typ, dead)
+	}
+	// Evict adaptive-recheck state for proxies long gone from the DB (retention/prune) so the
+	// maps don't accumulate dead keys. A live proxy's nextRecheck is at most
+	// MaxRecheckInterval in the future; anything hours in the past is abandoned.
+	staleCutoff := time.Now().Add(-24 * time.Hour)
+	for k, due := range cm.nextRecheck {
+		if due.Before(staleCutoff) {
+			delete(cm.nextRecheck, k)
+			delete(cm.streak, k)
+		}
 	}
 	// The scanner's candidates have now been classified/validated, so consume them
 	// (mirrors checker.py -scan clearing _scan_results) regardless of outcome.
@@ -318,15 +343,44 @@ func (cm *CheckManager) gatherCandidates(ctx context.Context) (jobs []proxyJob, 
 			}
 		}
 		// Re-validate already-stored proxies so stale ones get pruned and live ones
-		// get a fresh last_checked.
+		// get a fresh last_checked — but ADAPTIVELY: skip stored proxies not yet due for a
+		// recheck (stable ones have a longer interval), unless they also appear on a fresh
+		// list above (then they're already queued and validated anyway).
+		now := time.Now()
 		for _, typ := range testableTypes {
 			stored, _ := cm.db.GetProxiesByType(typ)
 			for _, p := range stored {
+				if cm.cfg.MaxRecheckInterval > 0 {
+					if due, ok := cm.nextRecheck[typ+"|"+p]; ok && now.Before(due) {
+						continue // not due yet
+					}
+				}
 				add(p, typ, true)
 			}
 		}
 	}
 	return jobs, scanIPs
+}
+
+// recheckInterval returns the adaptive cadence for a proxy with the given consecutive
+// success streak: CheckInterval doubled per success, capped at MaxRecheckInterval.
+func (cm *CheckManager) recheckInterval(streak int) time.Duration {
+	base := cm.cfg.CheckInterval
+	if base <= 0 {
+		base = 60 * time.Second
+	}
+	max := cm.cfg.MaxRecheckInterval
+	if max <= 0 {
+		return base
+	}
+	d := base
+	for i := 0; i < streak && d < max; i++ {
+		d *= 2
+	}
+	if d > max {
+		d = max
+	}
+	return d
 }
 
 // validateStream runs jobs through a bounded worker pool and STREAMS each result on the

@@ -109,7 +109,13 @@ them via `CONNECT` (see `checker/https_smoke_test.go` for the proof).
   (proxy detectable but your IP hidden), or `unknown` (validated but not classified —
   the header-reflecting endpoint wasn't reached). Transparent proxies (that leak your IP)
   are never stored. Empty = any tier.
-- `format` — `json` (array of `{proxy,response_time,last_checked,anon}`, fastest first) or `text`
+- `format` — `json` (array of `{proxy,response_time,last_checked,anon}`, fastest first),
+  `text`, `csv`, `curl` (paste-ready `curl -x` lines), or `proxychains` (`[ProxyList]` lines)
+- `pick=1` — return a single round-robin proxy; `session=ID` pins that session to one proxy
+  (sliding TTL) for a stable egress IP; add `rotate=1` to force a fresh pick
+
+`GET /proxy.pac` serves a browser proxy-auto-config pointing at the relay with the fastest
+fresh http proxies as fallbacks.
 
 An empty match is `200` with an empty body. `GET /` serves HTML docs. Probes: `GET /health`
 → `ok` (liveness, always 200); `GET /ready` → `200` once ≥1 validated upstream exists, else
