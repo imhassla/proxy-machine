@@ -132,31 +132,43 @@ func (s *SocksServer) handle(conn net.Conn) {
 	if err := s.handshake(conn); err != nil {
 		return // errors are per-client; nothing to surface
 	}
-	target, err := s.readConnectRequest(conn)
+	cmd, target, err := s.readRequest(conn)
 	if err != nil {
 		return
 	}
-	s.metrics.IncRelaySocks()
 
-	// Tunnel phase: no artificial deadline (connections can be long-lived).
-	_ = conn.SetDeadline(time.Time{})
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
-	upstream, derr := s.dial(ctx, target)
-	cancel()
-	if derr != nil {
-		s.metrics.IncRelayFailure()
-		_ = writeReply(conn, repHostUnreachable)
-		return
+	switch cmd {
+	case cmdConnect:
+		s.metrics.IncRelaySocks()
+		// Tunnel phase: no artificial deadline (connections can be long-lived).
+		_ = conn.SetDeadline(time.Time{})
+		ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+		upstream, derr := s.dial(ctx, target)
+		cancel()
+		if derr != nil {
+			s.metrics.IncRelayFailure()
+			_ = writeReply(conn, repHostUnreachable)
+			return
+		}
+		if err := writeReply(conn, repSucceeded); err != nil {
+			_ = upstream.Close()
+			return
+		}
+		pipe(conn, upstream)
+	case cmdUDPAssociate:
+		s.metrics.IncRelaySocks()
+		_ = conn.SetDeadline(time.Time{})
+		s.handleUDPAssociate(conn)
+	default:
+		_ = writeReply(conn, repCmdNotSupported)
 	}
-	if err := writeReply(conn, repSucceeded); err != nil {
-		_ = upstream.Close()
-		return
-	}
-	pipe(conn, upstream)
 }
 
-// SOCKS5 reply codes (subset).
+// SOCKS5 commands and reply codes (subset).
 const (
+	cmdConnect      = 0x01
+	cmdUDPAssociate = 0x03
+
 	repSucceeded       = 0x00
 	repGeneralFailure  = 0x01
 	repHostUnreachable = 0x04
@@ -226,19 +238,14 @@ func (s *SocksServer) authUserPass(conn net.Conn) error {
 	return err
 }
 
-// readConnectRequest parses the SOCKS5 request and returns the "host:port" target. Only
-// CONNECT is supported; other commands get a reply and an error.
-func (s *SocksServer) readConnectRequest(conn net.Conn) (string, error) {
+// readRequest parses the SOCKS5 request and returns the command and the "host:port" target.
+func (s *SocksServer) readRequest(conn net.Conn) (cmd byte, target string, err error) {
 	head := make([]byte, 4) // VER, CMD, RSV, ATYP
 	if _, err := io.ReadFull(conn, head); err != nil {
-		return "", err
+		return 0, "", err
 	}
 	if head[0] != 0x05 {
-		return "", fmt.Errorf("bad request version %d", head[0])
-	}
-	if head[1] != 0x01 { // CONNECT only
-		_ = writeReply(conn, repCmdNotSupported)
-		return "", fmt.Errorf("unsupported command %d", head[1])
+		return 0, "", fmt.Errorf("bad request version %d", head[0])
 	}
 
 	var host string
@@ -246,36 +253,36 @@ func (s *SocksServer) readConnectRequest(conn net.Conn) (string, error) {
 	case 0x01: // IPv4
 		b := make([]byte, 4)
 		if _, err := io.ReadFull(conn, b); err != nil {
-			return "", err
+			return 0, "", err
 		}
 		host = net.IP(b).String()
 	case 0x04: // IPv6
 		b := make([]byte, 16)
 		if _, err := io.ReadFull(conn, b); err != nil {
-			return "", err
+			return 0, "", err
 		}
 		host = net.IP(b).String()
 	case 0x03: // domain
 		l := make([]byte, 1)
 		if _, err := io.ReadFull(conn, l); err != nil {
-			return "", err
+			return 0, "", err
 		}
 		b := make([]byte, int(l[0]))
 		if _, err := io.ReadFull(conn, b); err != nil {
-			return "", err
+			return 0, "", err
 		}
 		host = string(b)
 	default:
 		_ = writeReply(conn, repGeneralFailure)
-		return "", fmt.Errorf("bad atyp %d", head[3])
+		return 0, "", fmt.Errorf("bad atyp %d", head[3])
 	}
 
 	pb := make([]byte, 2)
 	if _, err := io.ReadFull(conn, pb); err != nil {
-		return "", err
+		return 0, "", err
 	}
 	port := int(pb[0])<<8 | int(pb[1])
-	return net.JoinHostPort(host, strconv.Itoa(port)), nil
+	return head[1], net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
 // writeReply sends a SOCKS5 reply with a zero BND.ADDR/PORT (IPv4 form).

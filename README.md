@@ -64,12 +64,17 @@ form accepts a `[database] path = …` section key.
 | `--timeout` | `30s` | total per-proxy validation timeout (list/IP fetch and per-proxy check) |
 | `--connectTimeout` | `5s` | connect (+SOCKS handshake) timeout per proxy — dead proxies fail fast |
 | `--checkInterval` | `60s` | background re-validation cadence |
+| `--maxProxyAge` | `24h` | drop proxies not re-validated within this window (0 disables) |
+| `--maxRecheckInterval` | `15m` | cap on adaptive per-proxy recheck cadence (0 = recheck every cycle) |
+| `--honeypot` | `true` | reject proxies that tamper with (inject into) HTTP responses |
 | `--relayAddr` | `127.0.0.1:3333` | HTTP relay bind (forwards HTTP + tunnels HTTPS via CONNECT) |
 | `--apiAddr` | `127.0.0.1:8000` | API bind |
-| `--socksAddr` | `127.0.0.1:1080` | client SOCKS5 listener bind (`off` to disable) |
+| `--socksAddr` | `127.0.0.1:1080` | client SOCKS5 listener bind (CONNECT + UDP ASSOCIATE; `off` to disable) |
 | `--maxFailover` | `5` | max upstream proxies tried per request/tunnel |
+| `--chainLength` | `1` | route each tunnel through N chained proxies (extra anonymity) |
 | `--stickyHeader` | _(off)_ | request header for session affinity (pins a session to an upstream) |
 | `--stickyTTL` | `10m` | sliding idle lifetime of a sticky-session pin |
+| `--sources` | _(built-in)_ | comma-separated proxy-list URLs (replaces the built-in set) |
 | `--proxyUser` / `--proxyPass` | _(off)_ | require auth on the relay (Basic) **and** SOCKS5 (user/pass) |
 | `--maxHosts` | `1048576` | (scan) cap on expanded host IPs |
 
@@ -172,6 +177,16 @@ go test -race ./...
 - **Session affinity** (`--stickyHeader`): relay/CONNECT requests carrying the header are
   pinned to the upstream they last succeeded through (sliding `--stickyTTL`), so sites that
   bind a session to the egress IP keep the same IP. Failover still applies if the pin dies.
+- **Proxy chaining** (`--chainLength N`): each tunnel is routed through N distinct proxies in
+  sequence (nested CONNECT/SOCKS handshakes) for extra anonymity — slower and more fragile.
+- **Honeypot detection** (`--honeypot`): a proxy that rewrites/injects into plaintext HTTP
+  responses is rejected during validation (TLS-MITM proxies already fail target-cert checks).
+- **Adaptive recheck**: a proxy's re-validation interval grows with each consecutive success
+  (up to `--maxRecheckInterval`), so stable proxies aren't re-checked every cycle.
+- **SOCKS5 UDP ASSOCIATE**: the listener relays UDP (DNS/QUIC). NOTE: UDP egresses **directly**
+  from this host (upstreams are TCP-only) — it is not anonymized through the proxy pool.
+- **Integration**: `GET /proxy.pac`, and `?format=csv|curl|proxychains`; `?pick=1`/`?session=`
+  for on-demand rotation.
 - socks4/4a proxies are validated (dialed through with the `pkg/socks` client, since
   net/http can't proxy socks4) and served/egressed like the other types.
 - Failover replays only idempotent methods (GET/HEAD/OPTIONS/TRACE/PUT/DELETE); POST/

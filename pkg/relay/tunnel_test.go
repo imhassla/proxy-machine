@@ -180,8 +180,8 @@ func TestRelaySocks4HTTPForward(t *testing.T) {
 // CONNECTs). Mixes an http-CONNECT hop and a socks5 hop to exercise per-hop handshakes.
 func TestDialChain(t *testing.T) {
 	echo := startEcho(t)
-	hop1 := startConnectProxy(t)    // http CONNECT proxy
-	hop2 := startSocks5Upstream(t)  // socks5 proxy
+	hop1 := startConnectProxy(t)   // http CONNECT proxy
+	hop2 := startSocks5Upstream(t) // socks5 proxy
 	chain := []string{"http://" + hop1, "socks5://" + hop2}
 
 	conn, err := dialChain(context.Background(), chain, echo, 3*time.Second)

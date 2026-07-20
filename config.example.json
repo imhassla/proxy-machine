@@ -4,12 +4,16 @@
   "timeout": "30s",
   "connectTimeout": "5s",
   "checkInterval": "60s",
+  "maxProxyAge": "24h",
+  "maxRecheckInterval": "15m",
+  "honeypotCheck": true,
 
   "apiAddr": "127.0.0.1:8000",
   "relayAddr": "127.0.0.1:3333",
   "socksAddr": "127.0.0.1:1080",
 
   "maxFailover": 5,
+  "chainLength": 1,
 
   "stickyHeader": "",
   "stickyTTL": "10m",
