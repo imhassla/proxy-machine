@@ -176,6 +176,22 @@ func TestRelaySocks4HTTPForward(t *testing.T) {
 	}
 }
 
+// A tunnel routed through a CHAIN of proxies reaches the target end-to-end (nested
+// CONNECTs). Mixes an http-CONNECT hop and a socks5 hop to exercise per-hop handshakes.
+func TestDialChain(t *testing.T) {
+	echo := startEcho(t)
+	hop1 := startConnectProxy(t)   // http CONNECT proxy
+	hop2 := startSocks5Upstream(t) // socks5 proxy
+	chain := []string{"http://" + hop1, "socks5://" + hop2}
+
+	conn, err := dialChain(context.Background(), chain, echo, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dialChain: %v", err)
+	}
+	defer conn.Close()
+	assertEcho(t, conn)
+}
+
 func TestDialUpstreamSocks4(t *testing.T) {
 	echo := startEcho(t)
 	socks4Up := startSocks4Upstream(t)

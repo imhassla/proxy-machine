@@ -8,6 +8,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,12 +28,17 @@ type Server struct {
 	db          *db.DB
 	metrics     *metrics.Metrics
 	upstreamsFn func() any // set via SetUpstreamsProvider; supplies /upstreams data
+	relayAddr   string     // advertised in /proxy.pac (set via SetRelayAddr)
+	sessions    *sessionStore
 	srv         *http.Server
 }
 
 // SetUpstreamsProvider wires a provider (e.g. relay.Server.Upstreams) that supplies the
 // live upstream health snapshot for GET /upstreams. Safe to leave unset (endpoint 404s).
 func (s *Server) SetUpstreamsProvider(fn func() any) { s.upstreamsFn = fn }
+
+// SetRelayAddr sets the relay address advertised first in /proxy.pac (empty = omit).
+func (s *Server) SetRelayAddr(addr string) { s.relayAddr = addr }
 
 // New creates a new Server on the given address. The *http.Server is built here (not in
 // Start), so Stop always has a non-nil server even if a shutdown signal arrives during
@@ -41,11 +47,12 @@ func New(addr string, manager *checker.CheckManager, database *db.DB, m *metrics
 	if addr == "" {
 		addr = ":8000"
 	}
-	s := &Server{manager: manager, db: database, metrics: m}
+	s := &Server{manager: manager, db: database, metrics: m, sessions: newSessionStore(30 * time.Minute)}
 	mux := http.NewServeMux()
 	mux.Handle("/docs/", http.StripPrefix("/docs/", http.FileServer(http.FS(docsFS))))
 	mux.HandleFunc("/", s.handleDocs)
 	mux.HandleFunc("/proxy/{type}", s.handleProxy)
+	mux.HandleFunc("/proxy.pac", s.handlePAC)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ready", s.handleReady)
 	mux.HandleFunc("/stats", s.handleStats)
@@ -252,8 +259,10 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if format == "" {
 		format = "json"
 	}
-	if format != "json" && format != "text" && format != "txt" {
-		http.Error(w, fmt.Sprintf("unsupported format: %s", format), http.StatusBadRequest)
+	switch format {
+	case "json", "text", "txt", "csv", "curl", "proxychains":
+	default:
+		http.Error(w, fmt.Sprintf("unsupported format: %s (json|text|csv|curl|proxychains)", format), http.StatusBadRequest)
 		return
 	}
 	// anon = anonymity tier filter (elite | anonymous | transparent | unknown); empty = any.
@@ -265,18 +274,98 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// An empty result is 200 with an empty body (a valid "no proxies match"), not 404.
 	rows := s.collectRows(proxyType, maxResp, minutes, anon)
+	// pick = return a single rotating proxy (on-demand rotation); session pins it.
+	if isTruthy(r.URL.Query().Get("pick")) || r.URL.Query().Get("session") != "" {
+		rows = s.pickOne(proxyType, rows, r.URL.Query().Get("session"), isTruthy(r.URL.Query().Get("rotate")))
+	}
+	writeProxyRows(w, proxyType, format, rows)
+}
 
-	if format == "json" {
+// writeProxyRows renders proxy rows in the requested format.
+func writeProxyRows(w http.ResponseWriter, proxyType, format string, rows []db.ProxyRow) {
+	switch format {
+	case "json":
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(rows)
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "proxy,response_time,last_checked,anon\n")
+		for _, row := range rows {
+			fmt.Fprintf(w, "%s,%.2f,%s,%s\n", row.Proxy, row.ResponseTime, row.LastChecked, row.Anon)
+		}
+	case "curl":
+		// One `curl -x <scheme>://host:port` line per proxy, ready to paste.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		for _, row := range rows {
+			fmt.Fprintf(w, "curl -x %s://%s\n", curlScheme(proxyType), row.Proxy)
+		}
+	case "proxychains":
+		// proxychains.conf [ProxyList] lines: "<type> <host> <port>".
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		for _, row := range rows {
+			if host, port, ok := strings.Cut(row.Proxy, ":"); ok {
+				fmt.Fprintf(w, "%s %s %s\n", proxyType, host, port)
+			}
+		}
+	default: // text / txt
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		for _, row := range rows {
+			_, _ = w.Write([]byte(row.Proxy + "\n"))
+		}
+	}
+}
+
+// curlScheme maps a stored proxy type to the scheme curl's -x expects.
+func curlScheme(proxyType string) string {
+	switch proxyType {
+	case "socks4":
+		return "socks4a"
+	case "socks5":
+		return "socks5h"
+	case "https":
+		return "https"
+	default:
+		return "http"
+	}
+}
+
+func isTruthy(v string) bool {
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// handlePAC serves a browser proxy auto-config (PAC) pointing at the local relay, with the
+// fastest fresh http proxies as ordered fallbacks and DIRECT last.
+func (s *Server) handlePAC(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	for _, row := range rows {
-		_, _ = w.Write([]byte(row.Proxy + "\n"))
+	rows := s.collectRows("http", -1, 30, "")
+	n := 10
+	if len(rows) < n {
+		n = len(rows)
 	}
+	var b strings.Builder
+	b.WriteString("function FindProxyForURL(url, host) {\n  return \"")
+	if s.relayAddr != "" {
+		fmt.Fprintf(&b, "PROXY %s; ", s.relayAddr)
+	}
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "PROXY %s; ", rows[i].Proxy)
+	}
+	b.WriteString("DIRECT\";\n}\n")
+	w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, b.String())
 }
 
 // proxyResponseTimeLayout is how the checker writes last_checked (UTC).

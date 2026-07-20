@@ -61,6 +61,7 @@ func runService(args []string) error {
 	relayServer := relay.New(cfg, manager, database, met)
 	// Expose the relay's live upstream health via GET /upstreams.
 	server.SetUpstreamsProvider(func() any { return relayServer.Upstreams() })
+	server.SetRelayAddr(cfg.RelayAddr) // advertised first in /proxy.pac
 
 	var checkerErr error
 	checkerDone := make(chan struct{})

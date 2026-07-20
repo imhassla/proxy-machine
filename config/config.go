@@ -35,6 +35,13 @@ type Config struct {
 	// bounding table growth (and per-cycle recheck cost) over long uptime. 0 disables.
 	MaxProxyAge time.Duration
 
+	// MaxRecheckInterval caps the adaptive per-proxy recheck cadence: a proxy's recheck
+	// interval doubles with each consecutive success (from CheckInterval) up to this cap, so
+	// stable proxies are re-validated far less often than flaky ones. Keep it under the API's
+	// default age window so adaptively-rechecked proxies still show as fresh. 0 disables
+	// (recheck everything every cycle).
+	MaxRecheckInterval time.Duration
+
 	// RelayAddr / APIAddr / SocksAddr are the listen addresses. Default to LOOPBACK so a
 	// fresh install is not an open proxy / open API exposed to the network. SocksAddr is
 	// the client-facing SOCKS5 listener (empty → disabled).
@@ -46,6 +53,11 @@ type Config struct {
 	// before giving up (bounds the round-robin walk over a DB full of dead proxies).
 	MaxFailover int
 
+	// ChainLength routes each CONNECT/SOCKS tunnel through this many proxies in sequence
+	// (nested handshakes) for extra anonymity. 1 (default) = single hop. Higher = slower and
+	// more fragile (all hops must be alive), so keep it small.
+	ChainLength int
+
 	// StickyHeader, when set, enables session affinity: relay requests carrying this header
 	// are pinned to the upstream they last succeeded through (empty → sticky disabled).
 	// StickyTTL is the sliding idle lifetime of a pin.
@@ -55,6 +67,11 @@ type Config struct {
 	// Sources, when non-empty, REPLACES the built-in public proxy-list URLs the checker
 	// harvests from. Each source's type is inferred from its URL (http/socks4/socks5).
 	Sources []string
+
+	// HoneypotCheck, when true, runs a plaintext content canary through each proxy that
+	// otherwise validated, rejecting proxies that TAMPER with the response body (ad/script
+	// injection). TLS-MITM proxies are already rejected by strict target-cert verification.
+	HoneypotCheck bool
 
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
@@ -67,23 +84,26 @@ type Config struct {
 // args should typically be os.Args[1:].
 func Load(args []string) (*Config, error) {
 	cfg := &Config{
-		Workers:        50,
-		Timeout:        30 * time.Second,
-		ConnectTimeout: 5 * time.Second,
-		DBPath:         "data.db",
-		CheckInterval:  60 * time.Second,
-		RelayAddr:      "127.0.0.1:3333",
-		APIAddr:        "127.0.0.1:8000",
-		SocksAddr:      "127.0.0.1:1080",
-		MaxFailover:    5,
-		StickyTTL:      10 * time.Minute,
-		MaxProxyAge:    24 * time.Hour,
+		Workers:            50,
+		Timeout:            30 * time.Second,
+		ConnectTimeout:     5 * time.Second,
+		DBPath:             "data.db",
+		CheckInterval:      60 * time.Second,
+		RelayAddr:          "127.0.0.1:3333",
+		APIAddr:            "127.0.0.1:8000",
+		SocksAddr:          "127.0.0.1:1080",
+		MaxFailover:        5,
+		ChainLength:        1,
+		StickyTTL:          10 * time.Minute,
+		MaxProxyAge:        24 * time.Hour,
+		MaxRecheckInterval: 15 * time.Minute,
+		HoneypotCheck:      true,
 	}
 
 	var configPath string
-	var workers, maxFailover int
-	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge time.Duration
-	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg string
+	var workers, maxFailover, chainLength int
+	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge, maxRecheckInterval time.Duration
+	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
@@ -92,14 +112,17 @@ func Load(args []string) (*Config, error) {
 	fs.DurationVar(&connectTimeout, "connectTimeout", -1, "Per-proxy connect timeout (default 5s)")
 	fs.DurationVar(&checkInterval, "checkInterval", -1, "Background re-check interval")
 	fs.DurationVar(&maxProxyAge, "maxProxyAge", -1, "Drop proxies not revalidated within this window (default 24h; 0 disables)")
+	fs.DurationVar(&maxRecheckInterval, "maxRecheckInterval", -1, "Cap on adaptive per-proxy recheck cadence (default 15m; 0 = recheck every cycle)")
 	fs.StringVar(&dbPath, "dbPath", "", "Path to database file")
 	fs.StringVar(&relayAddr, "relayAddr", "", "HTTP relay listen address (default 127.0.0.1:3333)")
 	fs.StringVar(&apiAddr, "apiAddr", "", "API listen address (default 127.0.0.1:8000)")
 	fs.StringVar(&socksAddr, "socksAddr", "", "Client SOCKS5 listen address (default 127.0.0.1:1080; 'off' to disable)")
 	fs.IntVar(&maxFailover, "maxFailover", -1, "Max upstream proxies tried per request (default 5)")
+	fs.IntVar(&chainLength, "chainLength", -1, "Route each tunnel through N chained proxies (default 1 = single hop)")
 	fs.StringVar(&stickyHeader, "stickyHeader", "", "Request header for session affinity (empty = off)")
 	fs.DurationVar(&stickyTTL, "stickyTTL", -1, "Sliding TTL of a sticky-session pin (default 10m)")
 	fs.StringVar(&sourcesArg, "sources", "", "Comma-separated proxy-list URLs (replaces the built-in sources)")
+	fs.StringVar(&honeypotArg, "honeypot", "", "Content-tamper detection: true|false (default true)")
 	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
 	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
 
@@ -128,6 +151,9 @@ func Load(args []string) (*Config, error) {
 	if maxProxyAge >= 0 {
 		cfg.MaxProxyAge = maxProxyAge
 	}
+	if maxRecheckInterval >= 0 {
+		cfg.MaxRecheckInterval = maxRecheckInterval
+	}
 	if dbPath != "" {
 		cfg.DBPath = dbPath
 	}
@@ -147,6 +173,9 @@ func Load(args []string) (*Config, error) {
 	if maxFailover >= 0 {
 		cfg.MaxFailover = maxFailover
 	}
+	if chainLength >= 1 {
+		cfg.ChainLength = chainLength
+	}
 	if stickyHeader != "" {
 		cfg.StickyHeader = stickyHeader
 	}
@@ -155,6 +184,9 @@ func Load(args []string) (*Config, error) {
 	}
 	if sourcesArg != "" {
 		cfg.Sources = splitCommaTrim(sourcesArg)
+	}
+	if honeypotArg != "" {
+		cfg.HoneypotCheck = honeypotArg == "true" || honeypotArg == "1" || honeypotArg == "yes"
 	}
 	if proxyUser != "" {
 		cfg.ProxyUser = proxyUser
@@ -184,21 +216,24 @@ func loadFile(path string, cfg *Config) error {
 }
 
 type fileConfig struct {
-	Workers        *int      `json:"workers"`
-	Timeout        *string   `json:"timeout"`
-	ConnectTimeout *string   `json:"connectTimeout"`
-	DBPath         *string   `json:"dbPath"`
-	CheckInterval  *string   `json:"checkInterval"`
-	MaxProxyAge    *string   `json:"maxProxyAge"`
-	RelayAddr      *string   `json:"relayAddr"`
-	APIAddr        *string   `json:"apiAddr"`
-	SocksAddr      *string   `json:"socksAddr"`
-	MaxFailover    *int      `json:"maxFailover"`
-	StickyHeader   *string   `json:"stickyHeader"`
-	StickyTTL      *string   `json:"stickyTTL"`
-	Sources        *[]string `json:"sources"`
-	ProxyUser      *string   `json:"proxyUser"`
-	ProxyPass      *string   `json:"proxyPass"`
+	Workers            *int      `json:"workers"`
+	Timeout            *string   `json:"timeout"`
+	ConnectTimeout     *string   `json:"connectTimeout"`
+	DBPath             *string   `json:"dbPath"`
+	CheckInterval      *string   `json:"checkInterval"`
+	MaxProxyAge        *string   `json:"maxProxyAge"`
+	MaxRecheckInterval *string   `json:"maxRecheckInterval"`
+	RelayAddr          *string   `json:"relayAddr"`
+	APIAddr            *string   `json:"apiAddr"`
+	SocksAddr          *string   `json:"socksAddr"`
+	MaxFailover        *int      `json:"maxFailover"`
+	ChainLength        *int      `json:"chainLength"`
+	StickyHeader       *string   `json:"stickyHeader"`
+	StickyTTL          *string   `json:"stickyTTL"`
+	Sources            *[]string `json:"sources"`
+	HoneypotCheck      *bool     `json:"honeypotCheck"`
+	ProxyUser          *string   `json:"proxyUser"`
+	ProxyPass          *string   `json:"proxyPass"`
 }
 
 // splitCommaTrim splits a comma-separated list, trimming blanks.
@@ -277,6 +312,10 @@ func loadINI(data []byte, cfg *Config) error {
 			if fc.MaxProxyAge == nil {
 				fc.MaxProxyAge = &val
 			}
+		case "maxrecheckinterval":
+			if fc.MaxRecheckInterval == nil {
+				fc.MaxRecheckInterval = &val
+			}
 		case "relayaddr":
 			if fc.RelayAddr == nil {
 				fc.RelayAddr = &val
@@ -297,6 +336,14 @@ func loadINI(data []byte, cfg *Config) error {
 			if fc.MaxFailover == nil {
 				fc.MaxFailover = &v
 			}
+		case "chainlength":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("invalid chainLength value %q: %w", val, err)
+			}
+			if fc.ChainLength == nil {
+				fc.ChainLength = &v
+			}
 		case "stickyheader":
 			if fc.StickyHeader == nil {
 				fc.StickyHeader = &val
@@ -305,6 +352,11 @@ func loadINI(data []byte, cfg *Config) error {
 			if fc.Sources == nil {
 				s := splitCommaTrim(val)
 				fc.Sources = &s
+			}
+		case "honeypotcheck":
+			if fc.HoneypotCheck == nil {
+				b := val == "true" || val == "1" || val == "yes"
+				fc.HoneypotCheck = &b
 			}
 		case "stickyttl":
 			if fc.StickyTTL == nil {
@@ -378,6 +430,12 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 		}
 		cfg.MaxFailover = *fc.MaxFailover
 	}
+	if fc.ChainLength != nil {
+		if *fc.ChainLength < 1 {
+			return fmt.Errorf("chainLength must be >= 1")
+		}
+		cfg.ChainLength = *fc.ChainLength
+	}
 	if fc.StickyHeader != nil {
 		cfg.StickyHeader = *fc.StickyHeader
 	}
@@ -391,12 +449,22 @@ func applyFileConfig(fc fileConfig, cfg *Config) error {
 	if fc.Sources != nil {
 		cfg.Sources = *fc.Sources
 	}
+	if fc.HoneypotCheck != nil {
+		cfg.HoneypotCheck = *fc.HoneypotCheck
+	}
 	if fc.MaxProxyAge != nil {
 		d, err := time.ParseDuration(*fc.MaxProxyAge)
 		if err != nil {
 			return fmt.Errorf("invalid maxProxyAge value %q: %w", *fc.MaxProxyAge, err)
 		}
 		cfg.MaxProxyAge = d
+	}
+	if fc.MaxRecheckInterval != nil {
+		d, err := time.ParseDuration(*fc.MaxRecheckInterval)
+		if err != nil {
+			return fmt.Errorf("invalid maxRecheckInterval value %q: %w", *fc.MaxRecheckInterval, err)
+		}
+		cfg.MaxRecheckInterval = d
 	}
 	if fc.ProxyUser != nil {
 		cfg.ProxyUser = *fc.ProxyUser

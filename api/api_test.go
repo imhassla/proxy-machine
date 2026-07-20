@@ -222,3 +222,70 @@ func TestReadyAndStats(t *testing.T) {
 		t.Fatalf("stats relay connect = %d, want 1", out.Relay.RelayConnect)
 	}
 }
+
+func TestExportFormatsAndPAC(t *testing.T) {
+	d, _ := db.OpenInMemory()
+	defer d.Close()
+	if err := d.Init(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_ = d.StoreProxyTier("http", "1.1.1.1:8080", 0.1, now, "elite")
+	_ = d.StoreProxyTier("http", "2.2.2.2:3128", 0.2, now, "anonymous")
+	s := New("127.0.0.1:0", nil, d, nil)
+	s.SetRelayAddr("127.0.0.1:3333")
+
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		s.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
+
+	if rec := get("/proxy/http?format=csv&minutes=0"); !strings.Contains(rec.Body.String(), "proxy,response_time,last_checked,anon") || !strings.Contains(rec.Body.String(), "1.1.1.1:8080,0.10") {
+		t.Fatalf("csv format wrong:\n%s", rec.Body.String())
+	}
+	if rec := get("/proxy/http?format=proxychains&minutes=0"); !strings.Contains(rec.Body.String(), "http 1.1.1.1 8080") {
+		t.Fatalf("proxychains format wrong:\n%s", rec.Body.String())
+	}
+	if rec := get("/proxy/http?format=curl&minutes=0"); !strings.Contains(rec.Body.String(), "curl -x http://1.1.1.1:8080") {
+		t.Fatalf("curl format wrong:\n%s", rec.Body.String())
+	}
+	pac := get("/proxy.pac")
+	if !strings.Contains(pac.Body.String(), "FindProxyForURL") || !strings.Contains(pac.Body.String(), "PROXY 127.0.0.1:3333") || !strings.Contains(pac.Body.String(), "DIRECT") {
+		t.Fatalf("pac wrong:\n%s", pac.Body.String())
+	}
+}
+
+func TestSessionRotation(t *testing.T) {
+	d, _ := db.OpenInMemory()
+	defer d.Close()
+	if err := d.Init(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for _, p := range []string{"1.1.1.1:80", "2.2.2.2:80", "3.3.3.3:80"} {
+		_ = d.StoreProxy("http", p, 0.1, now)
+	}
+	s := New("127.0.0.1:0", nil, d, nil)
+	pick := func(q string) string {
+		rec := httptest.NewRecorder()
+		s.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/http?minutes=0&format=text&"+q, nil))
+		return strings.TrimSpace(rec.Body.String())
+	}
+	// pick=1 returns exactly one proxy.
+	one := pick("pick=1")
+	if one == "" || strings.Contains(one, "\n") {
+		t.Fatalf("pick=1 should return exactly one proxy, got %q", one)
+	}
+	// Same session returns the SAME proxy across calls.
+	a := pick("session=abc")
+	b := pick("session=abc")
+	if a != b || a == "" {
+		t.Fatalf("session pin not stable: %q vs %q", a, b)
+	}
+	// rotate=1 forces a fresh pick (different, given 3 proxies).
+	c := pick("session=abc&rotate=1")
+	if c == "" {
+		t.Fatal("rotate returned empty")
+	}
+}
