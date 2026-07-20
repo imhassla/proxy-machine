@@ -29,6 +29,20 @@ func startUDPEcho(t *testing.T) *net.UDPAddr {
 	return ln.LocalAddr().(*net.UDPAddr)
 }
 
+// resolveUDP's IP-literal branches must not touch DNS (deterministic, no network), and an
+// unparseable host must return nil rather than a bogus address.
+func TestResolveUDPLiterals(t *testing.T) {
+	if a := resolveUDP("1.2.3.4", 53); a == nil || !a.IP.Equal(net.IPv4(1, 2, 3, 4)) || a.Port != 53 {
+		t.Fatalf("IPv4 literal resolve = %v, want 1.2.3.4:53", a)
+	}
+	if a := resolveUDP("::1", 443); a == nil || !a.IP.Equal(net.IPv6loopback) || a.Port != 443 {
+		t.Fatalf("IPv6 literal resolve = %v, want [::1]:443", a)
+	}
+	if a := resolveUDP("", 53); a != nil {
+		t.Fatalf("empty host resolve = %v, want nil", a)
+	}
+}
+
 // End-to-end SOCKS5 UDP ASSOCIATE: negotiate over TCP, then relay a datagram to a UDP echo
 // target and read the echoed reply back through the relay.
 func TestSocksUDPAssociate(t *testing.T) {

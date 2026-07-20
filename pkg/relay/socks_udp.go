@@ -1,8 +1,8 @@
 package relay
 
 import (
+	"context"
 	"net"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +13,11 @@ import (
 // idle-but-open association pins two UDP sockets + two goroutines + buffers indefinitely, and
 // there is no cap on concurrent associations.
 const udpIdleTimeout = 60 * time.Second
+
+// udpResolveTimeout bounds a per-datagram DNS lookup for a domain target so a slow/stuck
+// resolver can't park the forwarding goroutine (a context-less ResolveUDPAddr isn't
+// interruptible by socket close during teardown).
+const udpResolveTimeout = 5 * time.Second
 
 // handleUDPAssociate services a SOCKS5 UDP ASSOCIATE. It binds a UDP relay socket, tells the
 // client where to send datagrams, then shuttles SOCKS5-UDP-encapsulated packets between the
@@ -69,8 +74,8 @@ func (s *SocksServer) handleUDPAssociate(conn net.Conn) {
 			if !ok {
 				continue
 			}
-			dst, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
-			if err != nil {
+			dst := resolveUDP(host, port)
+			if dst == nil {
 				continue
 			}
 			_, _ = egress.WriteToUDP(data, dst)
@@ -124,6 +129,23 @@ func (s *SocksServer) handleUDPAssociate(conn net.Conn) {
 			}
 		}
 	}
+}
+
+// resolveUDP resolves a UDP target to an address, returning nil on failure. A literal IP is
+// resolved inline; a domain uses the default resolver with a bounded context so a slow or
+// wedged DNS lookup can't park the forwarding goroutine indefinitely (socket close during
+// teardown does not interrupt a context-less lookup).
+func resolveUDP(host string, port int) *net.UDPAddr {
+	if ip := net.ParseIP(host); ip != nil {
+		return &net.UDPAddr{IP: ip, Port: port}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), udpResolveTimeout)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		return nil
+	}
+	return &net.UDPAddr{IP: net.IP(ips[0].AsSlice()), Port: port}
 }
 
 // writeReplyAddr sends a SOCKS5 reply carrying a real BND.ADDR/BND.PORT (used by UDP
