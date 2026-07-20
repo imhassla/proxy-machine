@@ -215,3 +215,41 @@ func TestHealthPersistence(t *testing.T) {
 		t.Fatalf("row2 round-trip wrong: %+v", r)
 	}
 }
+
+func TestPruneGeoOrphans(t *testing.T) {
+	d := setupDB(t)
+	// One live proxy (whose host has geo) and one orphan geo row (no backing proxy), plus an
+	// empty marker whose proxy also no longer exists.
+	if err := d.StoreProxy("http", "1.1.1.1:80", 0.1, "2030-01-01 00:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	rows := []GeoRow{
+		{IP: "1.1.1.1", Country: "US", CountryCode: "US", ASN: "AS1 Live", ISP: "Live"},
+		{IP: "9.9.9.9", Country: "DE", CountryCode: "DE", ASN: "AS2 Gone", ISP: "Gone"}, // orphan
+		{IP: "10.0.0.1"}, // empty marker for a since-removed proxy
+	}
+	if err := d.StoreGeo(rows, "2030-01-01 00:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := d.PruneGeoOrphans()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("pruned %d geo rows, want 2 (9.9.9.9 + 10.0.0.1)", n)
+	}
+	// The live proxy's geo survives; a re-prune is a no-op.
+	got, err := d.GeoByIPs([]string{"1.1.1.1", "9.9.9.9", "10.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("after prune GeoByIPs returned %d rows, want 1 (1.1.1.1): %+v", len(got), got)
+	}
+	if _, ok := got["1.1.1.1"]; !ok {
+		t.Fatalf("live proxy geo was pruned; got %+v", got)
+	}
+	if n2, err := d.PruneGeoOrphans(); err != nil || n2 != 0 {
+		t.Fatalf("second prune = (%d, %v), want (0, nil)", n2, err)
+	}
+}

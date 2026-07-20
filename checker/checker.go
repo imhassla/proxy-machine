@@ -303,6 +303,22 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 			delete(cm.streak, k)
 		}
 	}
+	// recheckFails can't age out via nextRecheck (a failure deletes the proxy's nextRecheck
+	// entry), so evict it separately: a stored proxy still failing rechecks is re-queued every
+	// cycle (its nextRecheck was cleared, so it's always "due"), so any recheckFails key NOT in
+	// this cycle's job set belongs to a proxy that has left the DB — drop it. Without this the
+	// map strands keys for proxies pruned while stuck at 1–2 fails (below pruneThreshold).
+	if len(cm.recheckFails) > 0 {
+		present := make(map[string]struct{}, len(jobs))
+		for _, j := range jobs {
+			present[j.typ+"|"+j.addr] = struct{}{}
+		}
+		for k := range cm.recheckFails {
+			if _, ok := present[k]; !ok {
+				delete(cm.recheckFails, k)
+			}
+		}
+	}
 	// The scanner's candidates have now been classified/validated, so consume them
 	// (mirrors checker.py -scan clearing _scan_results) regardless of outcome.
 	cm.deleteScanResults(scanIPs)
@@ -315,6 +331,17 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 			log.Printf("checker: retention prune failed: %v", err)
 		} else if n > 0 {
 			log.Printf("checker: retention pruned %d proxies older than %s", n, cm.cfg.MaxProxyAge)
+		}
+	}
+	// Keep the geo table bounded to the live pool: drop enrichment rows for proxy IPs that
+	// have since left the DB. Without this _geo is insert-only and grows forever (and bloats
+	// the enricher's per-cycle full-table scan). Gated on GeoLookup so it's a no-op when the
+	// enricher isn't populating _geo at all.
+	if cm.db != nil && cm.cfg.GeoLookup {
+		if n, err := cm.db.PruneGeoOrphans(); err != nil {
+			log.Printf("checker: geo prune failed: %v", err)
+		} else if n > 0 {
+			log.Printf("checker: pruned %d orphaned geo rows", n)
 		}
 	}
 

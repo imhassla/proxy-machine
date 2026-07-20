@@ -4,7 +4,15 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 )
+
+// udpIdleTimeout tears down a UDP association that has seen no datagram in either direction
+// for this long, even if the client keeps the TCP control connection open. Without it an
+// idle-but-open association pins two UDP sockets + two goroutines + buffers indefinitely, and
+// there is no cap on concurrent associations.
+const udpIdleTimeout = 60 * time.Second
 
 // handleUDPAssociate services a SOCKS5 UDP ASSOCIATE. It binds a UDP relay socket, tells the
 // client where to send datagrams, then shuttles SOCKS5-UDP-encapsulated packets between the
@@ -40,6 +48,11 @@ func (s *SocksServer) handleUDPAssociate(conn net.Conn) {
 	var mu sync.Mutex
 	var clientAddr *net.UDPAddr // learned from the first datagram the client sends
 
+	// lastActive tracks the most recent datagram in either direction (unix nanos) so the idle
+	// watchdog can reap a silent association.
+	var lastActive atomic.Int64
+	lastActive.Store(time.Now().UnixNano())
+
 	// client → target: decapsulate and forward.
 	go func() {
 		buf := make([]byte, 64*1024)
@@ -48,6 +61,7 @@ func (s *SocksServer) handleUDPAssociate(conn net.Conn) {
 			if err != nil {
 				return
 			}
+			lastActive.Store(time.Now().UnixNano())
 			mu.Lock()
 			clientAddr = from
 			mu.Unlock()
@@ -71,6 +85,7 @@ func (s *SocksServer) handleUDPAssociate(conn net.Conn) {
 			if err != nil {
 				return
 			}
+			lastActive.Store(time.Now().UnixNano())
 			mu.Lock()
 			ca := clientAddr
 			mu.Unlock()
@@ -81,12 +96,32 @@ func (s *SocksServer) handleUDPAssociate(conn net.Conn) {
 		}
 	}()
 
-	// The association lives as long as the TCP control connection: block until the client
-	// closes it, then the deferred Closes tear down both UDP sockets and end the goroutines.
-	drain := make([]byte, 1)
+	// Watch the TCP control connection in the background: when the client closes it, signal
+	// teardown. (conn.Read blocks with no deadline, so we can't poll it inline with the timer.)
+	ctlClosed := make(chan struct{})
+	go func() {
+		defer close(ctlClosed)
+		drain := make([]byte, 1)
+		for {
+			if _, err := conn.Read(drain); err != nil {
+				return
+			}
+		}
+	}()
+
+	// The association lives until the control conn closes OR it goes idle for udpIdleTimeout.
+	// Returning runs the deferred client/egress Closes (which end the two relay goroutines);
+	// the caller's conn.Close() then unblocks the control-drain goroutine above.
+	ticker := time.NewTicker(udpIdleTimeout / 2)
+	defer ticker.Stop()
 	for {
-		if _, err := conn.Read(drain); err != nil {
+		select {
+		case <-ctlClosed:
 			return
+		case <-ticker.C:
+			if time.Since(time.Unix(0, lastActive.Load())) >= udpIdleTimeout {
+				return
+			}
 		}
 	}
 }

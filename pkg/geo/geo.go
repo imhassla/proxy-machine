@@ -58,9 +58,10 @@ func New(database geoStore) *Enricher {
 	}
 }
 
-// logEvery batches between progress summaries (~1/min at the 2s pace) — keeps the log quiet
-// instead of a line per batch.
-const logEvery = 30
+// logInterval is the MINIMUM wall-clock time between progress summaries. A steady trickle of
+// new proxy IPs (a few per cycle) must not print a line every idle transition, so we gate on
+// elapsed time and only emit when something actually happened since the last line.
+const logInterval = 5 * time.Minute
 
 // cycleResult reports what one batch did, so Run can log periodic summaries instead of
 // one line per batch.
@@ -68,18 +69,18 @@ type cycleResult struct {
 	wait     time.Duration
 	enriched int  // rows written (incl. empty markers)
 	failed   bool // the batch lookup errored (e.g. transient EOF)
-	idle     bool // nothing left to enrich
 }
 
 // Run loops until ctx is cancelled: pull a batch of un-enriched proxy IPs, look them up, and
-// store. A cancelled ctx returns nil (graceful). Progress is logged as a periodic summary
-// rather than per batch.
+// store. A cancelled ctx returns nil (graceful). Progress is logged as a time-gated summary
+// (at most one line per logInterval), not per batch or per idle transition.
 func (e *Enricher) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	log.Printf("geo: enricher started (online lookup via ip-api.com, background)")
-	var total, winEnriched, winErrors, sinceLog int
+	var total, winEnriched, winErrors int
+	lastLog := e.now()
 	for {
 		r := e.cycle(ctx)
 		total += r.enriched
@@ -87,15 +88,11 @@ func (e *Enricher) Run(ctx context.Context) error {
 		if r.failed {
 			winErrors++
 		}
-		sinceLog++
-		switch {
-		case r.idle && (winEnriched > 0 || winErrors > 0):
-			// Caught up — flush the window once, then stay quiet while idle.
-			log.Printf("geo: caught up — enriched %d IPs (%d total; %d transient lookup errors)", winEnriched, total, winErrors)
-			winEnriched, winErrors, sinceLog = 0, 0, 0
-		case !r.idle && sinceLog >= logEvery:
-			log.Printf("geo: enriched %d IPs (%d total; %d transient lookup errors) in last %d batches", winEnriched, total, winErrors, sinceLog)
-			winEnriched, winErrors, sinceLog = 0, 0, 0
+		if (winEnriched > 0 || winErrors > 0) && e.now().Sub(lastLog) >= logInterval {
+			log.Printf("geo: enriched %d IPs in the last %s (%d total; %d transient lookup errors)",
+				winEnriched, logInterval, total, winErrors)
+			winEnriched, winErrors = 0, 0
+			lastLog = e.now()
 		}
 		select {
 		case <-ctx.Done():
@@ -114,7 +111,7 @@ func (e *Enricher) cycle(ctx context.Context) cycleResult {
 		return cycleResult{wait: idleWait}
 	}
 	if len(ips) == 0 {
-		return cycleResult{wait: idleWait, idle: true} // every proxy IP already enriched
+		return cycleResult{wait: idleWait} // every proxy IP already enriched
 	}
 	rows, retryAfter, err := e.lookup(ctx, ips)
 	if err != nil {

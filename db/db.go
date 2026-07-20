@@ -557,6 +557,76 @@ func (d *DB) StoreGeo(rows []GeoRow, updated string) error {
 	return nil
 }
 
+// PruneGeoOrphans deletes _geo rows whose IP is no longer the host of any stored proxy across
+// the per-type tables, returning how many were removed. Proxy IPs churn heavily (thousands
+// pruned per day), and _geo is otherwise insert-only — including empty markers for
+// un-geolocatable IPs — so without this it grows without bound over long uptime, which also
+// bloats ProxyIPsMissingGeo's full-table scan every cycle. Keeps _geo bounded to the live pool.
+func (d *DB) PruneGeoOrphans() (int, error) {
+	if d.conn == nil {
+		return 0, fmt.Errorf("database connection is nil")
+	}
+	if err := d.EnsureGeoTable(); err != nil {
+		return 0, err
+	}
+	// Live proxy hosts across every per-type table.
+	live := map[string]struct{}{}
+	for table := range allowedTypes {
+		rows, err := d.conn.Query(fmt.Sprintf("SELECT proxy FROM %s", table))
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var p string
+			if err := rows.Scan(&p); err != nil {
+				continue
+			}
+			live[hostOf(p)] = struct{}{}
+		}
+		rows.Close()
+	}
+	// Collect _geo IPs not backed by any live proxy.
+	rows, err := d.conn.Query("SELECT ip FROM _geo")
+	if err != nil {
+		return 0, fmt.Errorf("select geo ips: %w", err)
+	}
+	var orphans []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if _, ok := live[ip]; !ok {
+			orphans = append(orphans, ip)
+		}
+	}
+	rows.Close()
+	if len(orphans) == 0 {
+		return 0, nil
+	}
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	stmt, err := tx.Prepare("DELETE FROM _geo WHERE ip = ?")
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("prepare geo delete: %w", err)
+	}
+	defer stmt.Close()
+	for _, ip := range orphans {
+		if _, err := stmt.Exec(ip); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("delete geo %q: %w", ip, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit geo prune: %w", err)
+	}
+	return len(orphans), nil
+}
+
 // CountByCountry returns proxy-IP counts per country (from _geo), most first — for the
 // dashboard's TOP COUNTRIES panel.
 func (d *DB) CountByCountry() ([]struct {
