@@ -570,8 +570,10 @@ func (d *DB) CountByCountry() ([]struct {
 	if err := d.EnsureGeoTable(); err != nil {
 		return nil, err
 	}
-	rows, err := d.conn.Query(`SELECT COALESCE(NULLIF(country,''),'?'), COALESCE(NULLIF(country_code,''),'??'), COUNT(*)
-		FROM _geo GROUP BY country_code ORDER BY 3 DESC`)
+	// Exclude empty-marker rows (IPs ip-api couldn't geolocate — stored so they aren't
+	// re-queried forever, but they carry no country).
+	rows, err := d.conn.Query(`SELECT country, country_code, COUNT(*)
+		FROM _geo WHERE country_code IS NOT NULL AND country_code != '' GROUP BY country_code ORDER BY 3 DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("count by country: %w", err)
 	}

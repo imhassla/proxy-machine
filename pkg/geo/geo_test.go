@@ -45,16 +45,25 @@ func TestEnricherLookupAndStore(t *testing.T) {
 	e.url = srv.URL
 	e.now = func() time.Time { return time.Unix(0, 0) }
 
-	wait := e.cycle(context.Background())
-	if wait != pace {
-		t.Fatalf("cycle wait = %v, want pace %v", wait, pace)
+	res := e.cycle(context.Background())
+	if res.wait != pace {
+		t.Fatalf("cycle wait = %v, want pace %v", res.wait, pace)
 	}
-	if len(store.stored) != 1 {
-		t.Fatalf("stored %d rows, want 1 (the private IP is skipped): %+v", len(store.stored), store.stored)
+	// Both IPs are stored: the resolvable one with geo, the un-geolocatable one as an empty
+	// marker (so it isn't re-queried every cycle forever).
+	if len(store.stored) != 2 {
+		t.Fatalf("stored %d rows, want 2 (resolvable + empty marker): %+v", len(store.stored), store.stored)
 	}
-	g := store.stored[0]
-	if g.IP != "1.2.3.4" || g.CountryCode != "US" || g.ASN != "AS64500 Example" || g.ISP != "ExampleISP" {
+	byIP := map[string]db.GeoRow{}
+	for _, g := range store.stored {
+		byIP[g.IP] = g
+	}
+	g := byIP["1.2.3.4"]
+	if g.CountryCode != "US" || g.ASN != "AS64500 Example" || g.ISP != "ExampleISP" {
 		t.Fatalf("geo row wrong: %+v", g)
+	}
+	if m, ok := byIP["10.0.0.1"]; !ok || m.CountryCode != "" || m.ASN != "" {
+		t.Fatalf("marker row for un-geolocatable IP wrong: %+v (present=%v)", m, ok)
 	}
 }
 
