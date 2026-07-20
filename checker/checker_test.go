@@ -402,14 +402,14 @@ func TestRecheckIntervalAdaptive(t *testing.T) {
 }
 
 func TestHoneypotClean(t *testing.T) {
-	clean := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "proxymachine-canary")
+	cleanIP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "203.0.113.9\n") // a normal IP echo
 	}))
-	defer clean.Close()
-	tamper := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "proxymachine-canary<script>ad</script>")
+	defer cleanIP.Close()
+	inject := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<!DOCTYPE html><html>Your account has expired. Pay now.</html>") // captive portal
 	}))
-	defer tamper.Close()
+	defer inject.Close()
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusServiceUnavailable)
 	}))
@@ -417,14 +417,18 @@ func TestHoneypotClean(t *testing.T) {
 
 	ctx := context.Background()
 	c := &http.Client{Timeout: 3 * time.Second}
-	if !honeypotClean(ctx, c, clean.URL, "proxymachine-canary") {
-		t.Error("clean canary flagged as tampered")
+	if !honeypotClean(ctx, c, []canary{{cleanIP.URL, isPlainIP}}) {
+		t.Error("clean IP echo flagged as tampered")
 	}
-	if honeypotClean(ctx, c, tamper.URL, "proxymachine-canary") {
-		t.Error("tampered body NOT detected")
+	if honeypotClean(ctx, c, []canary{{inject.URL, isPlainIP}}) {
+		t.Error("captive-portal/HTML injection NOT detected")
 	}
-	// non-200 → don't penalize (false-positive-safe).
-	if !honeypotClean(ctx, c, down.URL, "proxymachine-canary") {
-		t.Error("a flaky (503) endpoint must not be treated as tampering")
+	// A non-responsive canary is skipped; the next responsive one decides.
+	if honeypotClean(ctx, c, []canary{{down.URL, isPlainIP}, {inject.URL, isPlainIP}}) {
+		t.Error("failover to the injecting canary should still detect tampering")
+	}
+	// All canaries down → don't penalize.
+	if !honeypotClean(ctx, c, []canary{{down.URL, isPlainIP}}) {
+		t.Error("all-unreachable canaries must not be treated as tampering")
 	}
 }

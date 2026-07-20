@@ -26,15 +26,30 @@ import (
 // hostile/huge source can't OOM the checker.
 const maxListBytes = 8 << 20 // 8 MiB
 
-// honeypotURL is a PLAINTEXT-HTTP canary whose body is exactly honeypotExpect
-// (httpbin /base64/<b64> echoes the decoded bytes). A proxy that injects into or rewrites
-// HTTP responses (ads/scripts) produces a different body → detected as tampering. Fetched
-// over http (not https) precisely because injection happens on plaintext, which our https
-// validation can't observe.
-const (
-	honeypotURL    = "http://httpbin.org/base64/cHJveHltYWNoaW5lLWNhbmFyeQ=="
-	honeypotExpect = "proxymachine-canary"
-)
+// canary is a PLAINTEXT-HTTP integrity probe: fetch url through the proxy and check the body
+// is what it should be. A content-injecting proxy / captive portal returns its own HTML
+// instead → ok() fails → the proxy is rejected. Fetched over http (not https) precisely
+// because injection happens on plaintext, which our https validation can't observe.
+type canary struct {
+	url string
+	ok  func(body string) bool
+}
+
+// honeypotCanaries are tried in order; the FIRST that responds (200) decides. amazonaws /
+// icanhazip return just the caller's IP over plain HTTP and are highly reliable, so the
+// check rarely no-ops (the earlier httpbin-only canary was often unreachable through a proxy
+// and thus toothless). A captive portal returns HTML → not a valid IP → tampering.
+var honeypotCanaries = []canary{
+	{"http://checkip.amazonaws.com", isPlainIP},
+	{"http://icanhazip.com", isPlainIP},
+	{"http://httpbin.org/base64/cHJveHltYWNoaW5lLWNhbmFyeQ==", func(b string) bool { return strings.TrimSpace(b) == "proxymachine-canary" }},
+}
+
+// isPlainIP reports whether body is a single line that parses as an IP (what a clean IP-echo
+// returns) — false for the HTML an injector/captive-portal serves.
+func isPlainIP(body string) bool {
+	return net.ParseIP(strings.TrimSpace(body)) != nil
+}
 
 // userAgent is sent on every checker HTTP request. Go's default "Go-http-client/1.1" is
 // widely blocked by CDNs/anti-bot gateways (e.g. httpbin returns 503 to it while curl gets
@@ -595,7 +610,7 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 			return 0, "", false
 		}
 		// Honeypot/tamper check: reject proxies that rewrite plaintext HTTP responses.
-		if cm.cfg.HoneypotCheck && !honeypotClean(ctx, client, honeypotURL, honeypotExpect) {
+		if cm.cfg.HoneypotCheck && !honeypotClean(ctx, client, honeypotCanaries) {
 			return 0, "", false
 		}
 		return rt, tier, true
@@ -603,26 +618,30 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 	return 0, "", false
 }
 
-// honeypotClean fetches the plaintext canary through the proxy client and reports whether
-// the body is untampered. It is FALSE-POSITIVE-SAFE: a transport error or non-200 (the
-// endpoint being unreachable/flaky through this proxy) returns true (don't penalize) — only
-// a clean 200 whose body differs from the expected canary is treated as tampering.
-func honeypotClean(ctx context.Context, client *http.Client, url, expect string) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return true
+// honeypotClean fetches plaintext canaries through the proxy client (in order) and reports
+// whether it is untampered. It is FALSE-POSITIVE-SAFE: transport errors / non-200 (the
+// endpoint being unreachable through this proxy) fall through to the next canary; only a
+// clean 200 whose body fails the canary's check (e.g. HTML where an IP was expected) is
+// treated as tampering. If NO canary responds, it returns true (don't penalize).
+func honeypotClean(ctx context.Context, client *http.Client, canaries []canary) bool {
+	for _, c := range canaries {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
+		if err != nil {
+			continue
+		}
+		setHeaders(req)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue // unreachable through this proxy — try the next canary
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+		return c.ok(string(body)) // first responsive canary decides
 	}
-	setHeaders(req)
-	resp, err := client.Do(req)
-	if err != nil {
-		return true
-	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return true
-	}
-	return strings.TrimSpace(string(body)) == expect
+	return true
 }
 
 // refreshCacheFromDB rebuilds the in-memory cache (read by the relay selector and the

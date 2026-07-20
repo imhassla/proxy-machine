@@ -349,7 +349,7 @@ func (s *Server) handlePAC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	rows := s.collectRows("http", -1, 30, "")
+	rows := s.collectRows("http", -1, 0, "") // no age filter — list all validated http fallbacks
 	n := 10
 	if len(rows) < n {
 		n = len(rows)
