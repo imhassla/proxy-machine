@@ -69,12 +69,15 @@ var (
 		"https://ifconfig.me/ip",
 		"https://httpbin.org/ip",
 	}
-	// httpbin.org/get is FIRST because it reflects the request HEADERS the target saw,
-	// which is what lets us classify anonymity (elite/anonymous/transparent). The plain
-	// IP-echoes are fallbacks (origin only → tier left unknown) for when httpbin is
-	// rate-limited/down.
+	// The anonymity classifier MUST run over PLAINTEXT http: only when the proxy FORWARDS an
+	// http request can it add Via/X-Forwarded-For that the target reflects — over https the
+	// proxy CONNECT-tunnels the request inside TLS and cannot touch headers, so every proxy
+	// would look "elite" (a false positive). So http://httpbin.org/get is first (reflects
+	// headers → real elite/anonymous/transparent tier). The https IP-echoes are liveness
+	// fallbacks only (origin != self, but tier left "unknown") for when the plaintext probe
+	// is unreachable/injected.
 	proxyTestURLs = []string{
-		"https://httpbin.org/get",
+		"http://httpbin.org/get",
 		"https://api.ipify.org",
 		"https://checkip.amazonaws.com",
 	}
