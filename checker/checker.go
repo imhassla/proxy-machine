@@ -254,10 +254,9 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 					log.Printf("checker: store %s %s: %v", r.job.typ, r.job.addr, err)
 				}
 			}
-			// Push newly-stored proxies into the relay cache and log progress periodically.
+			// Push newly-stored proxies into the relay cache mid-cycle (silently).
 			if okCount%25 == 0 {
 				cm.refreshCacheFromDB()
-				log.Printf("checker: progress — %d valid so far (%d/%d checked)", okCount, processed, len(jobs))
 			}
 		} else if r.job.recheck && cm.db != nil {
 			// A failure resets adaptive state so the proxy is rechecked promptly next cycle.
