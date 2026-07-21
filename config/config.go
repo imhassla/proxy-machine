@@ -100,6 +100,11 @@ type Config struct {
 	// when a round finds nothing new. 0 disables adaptive expansion.
 	DiscoverAdaptiveRounds int
 
+	// DiscoverGapFill: sweep the full port range of the top DiscoverGapFillHosts port-farm hosts
+	// to catch proxies in the gaps between clusters (which adaptive expansion can't bridge).
+	DiscoverGapFill      bool
+	DiscoverGapFillHosts int
+
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
 	// loopback default bind; a non-loopback RelayAddr should always set credentials).
@@ -132,12 +137,14 @@ func Load(args []string) (*Config, error) {
 		DiscoverSeqSpan:        4,
 		DiscoverPortWindow:     6,
 		DiscoverAdaptiveRounds: 2,
+		DiscoverGapFill:        true,
+		DiscoverGapFillHosts:   8,
 	}
 
 	var configPath string
-	var workers, maxFailover, chainLength, discoverMinDensity, discoverExpandSample, discoverSeqSpan, discoverPortWindow, discoverAdaptiveRounds int
+	var workers, maxFailover, chainLength, discoverMinDensity, discoverExpandSample, discoverSeqSpan, discoverPortWindow, discoverAdaptiveRounds, discoverGapFillHosts int
 	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge, maxRecheckInterval, discoverInterval time.Duration
-	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg, geoArg, discoverArg, discoverScanArg string
+	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg, geoArg, discoverArg, discoverScanArg, discoverGapFillArg string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
@@ -165,6 +172,8 @@ func Load(args []string) (*Config, error) {
 	fs.IntVar(&discoverSeqSpan, "discoverSeqSpan", -1, "Sequential-IP span: test ip ± N on the same port (default 4)")
 	fs.IntVar(&discoverPortWindow, "discoverPortWindow", -1, "Port-window: test port ± N on the same host (default 6)")
 	fs.IntVar(&discoverAdaptiveRounds, "discoverAdaptiveRounds", -1, "Follow-up rounds that widen around each found proxy to grab whole blocks (default 2; 0 off)")
+	fs.StringVar(&discoverGapFillArg, "discoverGapFill", "", "Sweep the full port range of top port-farm hosts to fill gaps: true|false (default true)")
+	fs.IntVar(&discoverGapFillHosts, "discoverGapFillHosts", -1, "Number of top port-farm hosts to gap-fill per pass (default 8)")
 	fs.StringVar(&discoverScanArg, "discoverScan", "", "Also run the expensive /24 neighbor port-scan (low yield): true|false (default false)")
 	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
 	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
@@ -254,6 +263,12 @@ func Load(args []string) (*Config, error) {
 	}
 	if discoverAdaptiveRounds >= 0 {
 		cfg.DiscoverAdaptiveRounds = discoverAdaptiveRounds
+	}
+	if discoverGapFillArg != "" {
+		cfg.DiscoverGapFill = discoverGapFillArg == "true" || discoverGapFillArg == "1" || discoverGapFillArg == "yes"
+	}
+	if discoverGapFillHosts >= 0 {
+		cfg.DiscoverGapFillHosts = discoverGapFillHosts
 	}
 	if discoverScanArg != "" {
 		cfg.DiscoverScan = discoverScanArg == "true" || discoverScanArg == "1" || discoverScanArg == "yes"

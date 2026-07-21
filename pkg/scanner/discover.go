@@ -82,6 +82,72 @@ func portWindowCandidates(pairs []string, window int) []string {
 	return out
 }
 
+// GapFillCandidates finds port-FARM hosts (a host running many proxies spread across a wide
+// port range) and sweeps each host's full min..max port range to catch proxies in the GAPS
+// between clusters — gaps too wide for adaptive expansion's bounded window to bridge. Bounded
+// to the top `hosts` farms by proxy count, and each sweep is capped at maxSpan ports. A host
+// qualifies as a farm at >= minPorts proxies.
+func (s *Scanner) GapFillCandidates(minPorts, hosts, maxSpan int) ([]string, error) {
+	var known []string
+	for _, typ := range []string{"http", "https", "socks4", "socks5"} {
+		ps, err := s.db.GetProxiesByType(typ)
+		if err != nil {
+			return nil, fmt.Errorf("load %s proxies: %w", typ, err)
+		}
+		known = append(known, ps...)
+	}
+	type agg struct{ cnt, mn, mx int }
+	byHost := map[string]*agg{}
+	for _, hp := range known {
+		h, ps, err := net.SplitHostPort(hp)
+		if err != nil {
+			continue
+		}
+		p, err := strconv.Atoi(ps)
+		if err != nil {
+			continue
+		}
+		a := byHost[h]
+		if a == nil {
+			a = &agg{cnt: 0, mn: p, mx: p}
+			byHost[h] = a
+		}
+		a.cnt++
+		if p < a.mn {
+			a.mn = p
+		}
+		if p > a.mx {
+			a.mx = p
+		}
+	}
+	type farm struct {
+		host    string
+		mn, cnt int
+		span    int
+	}
+	var farms []farm
+	for h, a := range byHost {
+		if a.cnt >= minPorts && a.mx > a.mn {
+			farms = append(farms, farm{host: h, mn: a.mn, cnt: a.cnt, span: a.mx - a.mn})
+		}
+	}
+	sort.Slice(farms, func(i, j int) bool { return farms[i].cnt > farms[j].cnt })
+	if hosts > 0 && len(farms) > hosts {
+		farms = farms[:hosts]
+	}
+	var out []string
+	for _, f := range farms {
+		span := f.span
+		if maxSpan > 0 && span > maxSpan {
+			span = maxSpan
+		}
+		for p := f.mn; p <= f.mn+span; p++ {
+			out = append(out, f.host+":"+strconv.Itoa(p))
+		}
+	}
+	return out, nil
+}
+
 // AdaptiveCandidates returns a WIDE expansion around a single freshly-confirmed proxy — many
 // neighboring ports on the same host plus the same port on many neighboring IPs — so once one
 // member of a proxy block is found, discovery grabs the rest of the block (contiguous port

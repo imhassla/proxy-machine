@@ -71,6 +71,9 @@ storing survivors immediately and attributing net-new ones:
 - **port-window** — adjacent ports on the same host (port ± `-discoverPortWindow`)
 - **common-port** — a curated set of frequent proxy ports on each known host
 
+After the initial expansion, up to `-discoverAdaptiveRounds` follow-up rounds widen aggressively
+around each freshly-found proxy to grab the rest of its block, and `-discoverGapFill` sweeps the
+full port range of the densest port-farm hosts to catch proxies in the gaps between clusters.
 These are validate-only (no port scan) and in testing found net-new proxies at **hundreds of
 times** the rate of a blind neighbor scan. `-discoverScan` additionally runs the old (expensive,
 low-yield) /24 neighbor port-scan through the pool. Run one-shot (`discover`) or as a continuous
@@ -98,6 +101,8 @@ form accepts a `[database] path = …` section key.
 | `--discoverSeqSpan` | `4` | sequential-IP: test ip ± N on the same port |
 | `--discoverPortWindow` | `6` | port-window: test port ± N on the same host |
 | `--discoverAdaptiveRounds` | `2` | follow-up rounds that widen around each found proxy to grab whole blocks (`0` off) |
+| `--discoverGapFill` | `true` | sweep the full port range of the top port-farm hosts to fill gaps between clusters |
+| `--discoverGapFillHosts` | `8` | number of top port-farm hosts to gap-fill per pass |
 | `--discoverScan` | `false` | also run the expensive /24 neighbor port-scan (low yield) |
 | `--discoverMinDensity` | `3` | min known proxies in a /24 to scan its neighbors (`--discoverScan` only) |
 | `--relayAddr` | `127.0.0.1:3333` | HTTP relay bind (forwards HTTP + tunnels HTTPS via CONNECT) |

@@ -386,6 +386,30 @@ func runDiscoverPass(ctx context.Context, manager *checker.CheckManager, sc *sca
 		totalStored += s
 	}
 
+	// Gap-fill: sweep the full port range of the densest port-farm hosts to catch proxies in
+	// the gaps between clusters that adaptive expansion's bounded window can't bridge.
+	if cfg.DiscoverGapFill {
+		const gapFillMinPorts, gapFillMaxSpan = 15, 2500
+		gaps, gerr := sc.GapFillCandidates(gapFillMinPorts, cfg.DiscoverGapFillHosts, gapFillMaxSpan)
+		if gerr == nil && len(gaps) > 0 {
+			var fresh []string
+			for _, c := range gaps {
+				if _, ok := tried[c]; !ok {
+					tried[c] = struct{}{}
+					fresh = append(fresh, c)
+				}
+			}
+			if len(fresh) > 0 {
+				log.Printf("discover: gap-fill — sweeping %d ports across top %d port-farm hosts", len(fresh), cfg.DiscoverGapFillHosts)
+				s, _, verr := validate(fresh)
+				if verr != nil {
+					return verr
+				}
+				totalStored += s
+			}
+		}
+	}
+
 	// Optional /24 neighbor port-scan through the pool (expensive, low yield).
 	if cfg.DiscoverScan {
 		openCh := make(chan string, 256)

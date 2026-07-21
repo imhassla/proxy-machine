@@ -153,6 +153,32 @@ func TestPortWindowCandidates(t *testing.T) {
 	}
 }
 
+func TestGapFillCandidates(t *testing.T) {
+	// 9.9.9.9 is a port-farm (3 proxies spanning 5000..5010); 1.2.3.4 has one → not a farm.
+	mock := &mockDB{proxies: []string{"9.9.9.9:5000", "9.9.9.9:5005", "9.9.9.9:5010", "1.2.3.4:80"}}
+	s := newScannerWithDB(mock)
+
+	got, err := s.GapFillCandidates(3, 5, 100) // minPorts=3, top 5 hosts, span cap 100
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Farm 9.9.9.9 → sweep 5000..5010 = 11 candidates; the single-proxy host is excluded.
+	if len(got) != 11 {
+		t.Fatalf("got %d candidates, want 11 (5000..5010): %v", len(got), got)
+	}
+	if got[0] != "9.9.9.9:5000" || got[len(got)-1] != "9.9.9.9:5010" {
+		t.Fatalf("range wrong: %s .. %s", got[0], got[len(got)-1])
+	}
+	// minPorts=4 → no host qualifies as a farm.
+	if g2, _ := s.GapFillCandidates(4, 5, 100); len(g2) != 0 {
+		t.Fatalf("minPorts=4 → want 0 farms, got %d candidates", len(g2))
+	}
+	// maxSpan caps the sweep width: span 10 capped to 3 → 5000..5003 = 4.
+	if g3, _ := s.GapFillCandidates(3, 5, 3); len(g3) != 4 {
+		t.Fatalf("maxSpan=3 → want 4 candidates (5000..5003), got %d", len(g3))
+	}
+}
+
 func TestDeriveNeighborhoods(t *testing.T) {
 	known := []string{
 		// 9.9.9.0/24 is a dense block: 3 distinct proxies, ports 8080 (x2) and 3128 (x1).
