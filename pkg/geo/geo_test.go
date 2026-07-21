@@ -45,9 +45,12 @@ func TestEnricherLookupAndStore(t *testing.T) {
 	e.url = srv.URL
 	e.now = func() time.Time { return time.Unix(0, 0) }
 
-	res := e.cycle(context.Background())
-	if res.wait != pace {
-		t.Fatalf("cycle wait = %v, want pace %v", res.wait, pace)
+	wait := e.cycle(context.Background())
+	if wait != pace {
+		t.Fatalf("cycle wait = %v, want pace %v", wait, pace)
+	}
+	if got := e.Resolved(); got != 1 {
+		t.Fatalf("Resolved() = %d, want 1 (only 1.2.3.4 geolocated; 10.0.0.1 is an empty marker)", got)
 	}
 	// Both IPs are stored: the resolvable one with geo, the un-geolocatable one as an empty
 	// marker (so it isn't re-queried every cycle forever).

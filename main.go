@@ -64,6 +64,16 @@ func runService(args []string) error {
 	server.SetUpstreamsProvider(func() any { return relayServer.Upstreams() })
 	server.SetRelayAddr(cfg.RelayAddr) // advertised first in /proxy.pac
 
+	// Geo/ASN enrichment runs as its OWN background process (online lookup), independent of
+	// the checker so validation never waits on it. Errors are logged internally. The enricher
+	// stays silent; the checker folds its progress (GeoResolved) into the cycle-done line.
+	// Wire GeoResolved BEFORE starting the checker so there's no data race on the field.
+	var geoEnricher *geo.Enricher
+	if cfg.GeoLookup {
+		geoEnricher = geo.New(database)
+		manager.GeoResolved = geoEnricher.Resolved
+	}
+
 	var checkerErr error
 	checkerDone := make(chan struct{})
 	go func() {
@@ -71,13 +81,11 @@ func runService(args []string) error {
 		checkerErr = manager.Start(ctx)
 	}()
 
-	// Geo/ASN enrichment runs as its OWN background process (online lookup), independent of
-	// the checker so validation never waits on it. Errors are logged internally.
 	geoDone := make(chan struct{})
 	go func() {
 		defer close(geoDone)
-		if cfg.GeoLookup {
-			_ = geo.New(database).Run(ctx)
+		if geoEnricher != nil {
+			_ = geoEnricher.Run(ctx)
 		}
 	}()
 

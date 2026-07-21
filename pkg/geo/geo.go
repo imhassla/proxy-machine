@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"proxymachine/db"
@@ -36,10 +37,11 @@ type geoStore interface {
 
 // Enricher looks up proxy-IP geolocation in the background.
 type Enricher struct {
-	db     geoStore
-	client *http.Client
-	url    string // batch endpoint (overridable in tests)
-	now    func() time.Time
+	db       geoStore
+	client   *http.Client
+	url      string // batch endpoint (overridable in tests)
+	now      func() time.Time
+	resolved atomic.Int64 // lifetime count of IPs actually geolocated (excludes empty markers)
 }
 
 // New returns an Enricher backed by the given DB.
@@ -58,78 +60,63 @@ func New(database geoStore) *Enricher {
 	}
 }
 
-// logInterval is the MINIMUM wall-clock time between progress summaries. A steady trickle of
-// new proxy IPs (a few per cycle) must not print a line every idle transition, so we gate on
-// elapsed time and only emit when something actually happened since the last line.
-const logInterval = 5 * time.Minute
-
-// cycleResult reports what one batch did, so Run can log periodic summaries instead of
-// one line per batch.
-type cycleResult struct {
-	wait     time.Duration
-	enriched int  // rows written (incl. empty markers)
-	failed   bool // the batch lookup errored (e.g. transient EOF)
-}
+// Resolved returns the lifetime count of proxy IPs actually geolocated (excludes empty
+// markers). The checker reads this to fold geo progress into its single end-of-cycle log line,
+// so the enricher itself stays silent (no separate geo log stream).
+func (e *Enricher) Resolved() int64 { return e.resolved.Load() }
 
 // Run loops until ctx is cancelled: pull a batch of un-enriched proxy IPs, look them up, and
-// store. A cancelled ctx returns nil (graceful). Progress is logged as a time-gated summary
-// (at most one line per logInterval), not per batch or per idle transition.
+// store. A cancelled ctx returns nil (graceful). It logs nothing on the happy path — progress
+// surfaces via Resolved() in the checker's cycle-done line; only real errors are logged.
 func (e *Enricher) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	log.Printf("geo: enricher started (online lookup via ip-api.com, background)")
-	var total, winEnriched, winErrors int
-	lastLog := e.now()
 	for {
-		r := e.cycle(ctx)
-		total += r.enriched
-		winEnriched += r.enriched
-		if r.failed {
-			winErrors++
-		}
-		if (winEnriched > 0 || winErrors > 0) && e.now().Sub(lastLog) >= logInterval {
-			log.Printf("geo: enriched %d IPs in the last %s (%d total; %d transient lookup errors)",
-				winEnriched, logInterval, total, winErrors)
-			winEnriched, winErrors = 0, 0
-			lastLog = e.now()
-		}
+		wait := e.cycle(ctx)
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(r.wait):
+		case <-time.After(wait):
 		}
 	}
 }
 
-// cycle processes one batch. It no longer logs per batch (Run summarizes); only genuine
-// store/query errors are logged, since those are rare and actionable.
-func (e *Enricher) cycle(ctx context.Context) cycleResult {
+// cycle processes one batch and returns how long to wait before the next. Only genuine
+// store/query errors are logged; enrichment counts accumulate in e.resolved.
+func (e *Enricher) cycle(ctx context.Context) time.Duration {
 	ips, err := e.db.ProxyIPsMissingGeo(batchSize)
 	if err != nil {
 		log.Printf("geo: query missing IPs: %v", err)
-		return cycleResult{wait: idleWait}
+		return idleWait
 	}
 	if len(ips) == 0 {
-		return cycleResult{wait: idleWait} // every proxy IP already enriched
+		return idleWait // every proxy IP already enriched
 	}
 	rows, retryAfter, err := e.lookup(ctx, ips)
 	if err != nil {
 		// Transient (e.g. ip-api closing the connection → EOF); the IPs stay queued and
-		// retry next cycle. Counted in the summary, not logged per occurrence.
-		return cycleResult{wait: pace, failed: true}
+		// retry next cycle. Silent — not worth a log line per occurrence.
+		return pace
 	}
 	if len(rows) > 0 {
 		now := e.now().UTC().Format("2006-01-02 15:04:05")
 		if err := e.db.StoreGeo(rows, now); err != nil {
 			log.Printf("geo: store: %v", err)
-			return cycleResult{wait: pace}
+			return pace
 		}
+		var resolved int64
+		for _, r := range rows {
+			if r.CountryCode != "" {
+				resolved++
+			}
+		}
+		e.resolved.Add(resolved)
 	}
 	if retryAfter > 0 {
-		return cycleResult{wait: retryAfter, enriched: len(rows)} // rate-limited — back off
+		return retryAfter // rate-limited — back off as the API asked
 	}
-	return cycleResult{wait: pace, enriched: len(rows)}
+	return pace
 }
 
 type apiResult struct {

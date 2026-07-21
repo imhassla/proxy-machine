@@ -165,6 +165,12 @@ type CheckManager struct {
 	IPURLs   []string // self-IP echoes (fetched directly)
 	TestURLs []string // proxy-test targets (fetched THROUGH each candidate)
 	ListURLs []string // public proxy-list sources
+
+	// GeoResolved, if set (wired from the geo enricher in main), returns the lifetime count of
+	// geolocated proxy IPs. The checker folds the per-cycle delta into its single cycle-done
+	// log line so the enricher needs no separate log stream. Read only by the RunCycle goroutine.
+	GeoResolved     func() int64
+	lastGeoResolved int64
 }
 
 // New creates a new CheckManager with the given config and database.
@@ -346,9 +352,17 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 	}
 
 	cm.refreshCacheFromDB()
-	log.Printf("checker: cycle done in %s: %d/%d validated OK (http=%d https=%d socks4=%d socks5=%d), %d pruned dead",
+	// Fold geo enrichment progress into this one line (the enricher stays silent): show how
+	// many proxy IPs it geolocated during this cycle and the running total.
+	geoNote := ""
+	if cm.GeoResolved != nil {
+		cur := cm.GeoResolved()
+		geoNote = fmt.Sprintf(", geo +%d (%d total)", cur-cm.lastGeoResolved, cur)
+		cm.lastGeoResolved = cur
+	}
+	log.Printf("checker: cycle done in %s: %d/%d validated OK (http=%d https=%d socks4=%d socks5=%d), %d pruned dead%s",
 		time.Since(start).Round(time.Second), okCount, len(jobs),
-		stored["http"], stored["https"], stored["socks4"], stored["socks5"], prunedCount)
+		stored["http"], stored["https"], stored["socks4"], stored["socks5"], prunedCount, geoNote)
 }
 
 // gatherCandidates builds the dedup'd job set for a cycle and the list of scan-result
