@@ -221,7 +221,7 @@ var speedBuckets = []struct {
 	label string
 	max   float64
 }{
-	{"<0.3s", 0.3}, {"0.3-1s", 1}, {"1-2s", 2}, {"2-5s", 5}, {">5s", 1e9},
+	{"<1s", 1}, {"1-3s", 3}, {">3s", 1e9},
 }
 
 // handleInsights aggregates the stored pool into dashboard-friendly views: anonymity-tier
