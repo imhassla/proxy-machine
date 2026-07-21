@@ -132,8 +132,34 @@ func (s *Scanner) Scan(ctx context.Context, opts *Options) error {
 	return err
 }
 
-// scan is Scan's implementation; it returns the number of open ip:ports stored.
+// scan is Scan's implementation: it collects open ip:ports and writes them to _scan_results
+// (batched, for the checker to validate next cycle). Returns the number stored.
 func (s *Scanner) scan(ctx context.Context, opts *Options) (int, error) {
+	var open []string
+	if _, err := s.scanEmit(ctx, opts, func(ipPort string) { open = append(open, ipPort) }); err != nil {
+		return 0, err
+	}
+	if len(open) == 0 {
+		return 0, nil
+	}
+	// Results arrive in nondeterministic order from the concurrent worker pool.
+	// Sort by (IP, port) so stored output is deterministic and user-friendly.
+	sortIPPorts(open)
+	if err := s.db.EnsureScanResultsTable(); err != nil {
+		return 0, fmt.Errorf("ensure scan results table: %w", err)
+	}
+	if err := s.db.StoreScanResults(open); err != nil {
+		return 0, fmt.Errorf("store scan results: %w", err)
+	}
+	return len(open), nil
+}
+
+// scanEmit runs the port scan and invokes emit(ipPort) for EACH open result as it is found
+// (streaming — the caller can validate/store immediately instead of waiting for the whole
+// scan). emit is called from a single goroutine, so it needs no locking. Returns the count of
+// open ports found. This is the shared core of scan (batch → _scan_results) and
+// DiscoverNeighborsStream (validate-as-found).
+func (s *Scanner) scanEmit(ctx context.Context, opts *Options, emit func(ipPort string)) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -188,33 +214,17 @@ func (s *Scanner) scan(ctx context.Context, opts *Options) (int, error) {
 
 	results := workerPool(ctx, jobs, opts.Workers, p.probe)
 
-	var open []string
+	var count int
 	for r := range results {
 		if r.open {
-			open = append(open, fmt.Sprintf("%s:%d", r.ip, r.port))
+			count++
+			emit(fmt.Sprintf("%s:%d", r.ip, r.port))
 		}
 	}
-
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return count, err
 	}
-
-	if len(open) == 0 {
-		return 0, nil
-	}
-
-	// Results arrive in nondeterministic order from the concurrent worker pool.
-	// Sort by (IP, port) so stored output is deterministic and user-friendly.
-	sortIPPorts(open)
-
-	if err := s.db.EnsureScanResultsTable(); err != nil {
-		return 0, fmt.Errorf("ensure scan results table: %w", err)
-	}
-	if err := s.db.StoreScanResults(open); err != nil {
-		return 0, fmt.Errorf("store scan results: %w", err)
-	}
-
-	return len(open), nil
+	return count, nil
 }
 
 // sortIPPorts orders "ip:port" entries by numeric IP then numeric port, so a

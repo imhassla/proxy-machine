@@ -454,14 +454,32 @@ func (cm *CheckManager) recheckInterval(streak int) time.Duration {
 // approach leaves the DB empty for the entire (very long) cycle. The channel closes when
 // every job has been checked (or ctx is cancelled).
 func (cm *CheckManager) validateStream(ctx context.Context, sip string, jobs []proxyJob) <-chan checkResult {
+	in := make(chan proxyJob)
+	go func() {
+		defer close(in)
+		for _, job := range jobs {
+			select {
+			case in <- job:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return cm.validateStreamChan(ctx, sip, len(jobs), in)
+}
+
+// validateStreamChan is validateStream's core over a job CHANNEL (fed continuously), so a
+// producer — a cycle's slice, or the discovery scanner streaming open ports as it finds them —
+// can pipe jobs in without materializing them first. workerHint caps the pool to the known job
+// count when >0 (0 = unknown → use the full configured worker count).
+func (cm *CheckManager) validateStreamChan(ctx context.Context, sip string, workerHint int, in <-chan proxyJob) <-chan checkResult {
 	workers := cm.cfg.Workers
 	if workers <= 0 {
 		workers = 1
 	}
-	if workers > len(jobs) {
-		workers = len(jobs)
+	if workerHint > 0 && workers > workerHint {
+		workers = workerHint
 	}
-	in := make(chan proxyJob)
 	out := make(chan checkResult, workers)
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
@@ -479,20 +497,63 @@ func (cm *CheckManager) validateStream(ctx context.Context, sip string, jobs []p
 		}()
 	}
 	go func() {
-		defer close(in)
-		for _, job := range jobs {
-			select {
-			case in <- job:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	go func() {
 		wg.Wait()
 		close(out)
 	}()
 	return out
+}
+
+// ValidateAndStoreStream validates each ip:port arriving on the channel as EVERY testable proxy
+// type and stores survivors the moment they pass — continuously, until the channel closes. It
+// reuses the exact per-proxy validation of a normal cycle (self-IP check, anonymity tiering,
+// honeypot) but skips the cycle's recheck/prune bookkeeping, so it's a pure additive
+// discovery path: found → validated (all types) → stored, with no wait for the next cycle.
+// Returns the number of (proxy,type) rows stored. Safe to run alongside the background loop.
+func (cm *CheckManager) ValidateAndStoreStream(ctx context.Context, ipPorts <-chan string) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sip, err := cm.fetchPublicIP(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("self-IP fetch failed: %w", err)
+	}
+
+	// Fan each incoming ip:port out into one job per testable type.
+	in := make(chan proxyJob)
+	go func() {
+		defer close(in)
+		for hp := range ipPorts {
+			hp = strings.TrimSpace(hp)
+			if hp == "" {
+				continue
+			}
+			for _, typ := range testableTypes {
+				select {
+				case in <- proxyJob{addr: hp, typ: typ}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	var stored int
+	for r := range cm.validateStreamChan(ctx, sip, 0, in) {
+		if !r.ok || cm.db == nil {
+			continue
+		}
+		now := time.Now().UTC().Format("2006-01-02 15:04:05")
+		if err := cm.db.StoreProxyTier(r.job.typ, r.job.addr, round2(r.rt), now, r.anon); err != nil {
+			log.Printf("discover: store %s %s: %v", r.job.typ, r.job.addr, err)
+			continue
+		}
+		stored++
+		if stored%25 == 0 {
+			cm.refreshCacheFromDB() // push fresh survivors to the relay mid-stream
+		}
+	}
+	cm.refreshCacheFromDB()
+	return stored, nil
 }
 
 // setHeaders applies the browser-like User-Agent (+ a permissive Accept) that gets requests

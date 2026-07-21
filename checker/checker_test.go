@@ -144,6 +144,37 @@ func TestCheckManager_ConsumesScanResults(t *testing.T) {
 	}
 }
 
+// ValidateAndStoreStream validates each ip:port off the channel as every type and stores
+// survivors immediately — the streaming path used by neighbor discovery (no cycle wait).
+func TestCheckManager_ValidateAndStoreStream(t *testing.T) {
+	fx := newCheckerFixture(t)
+	defer fx.cleanup()
+	d := newTestDB(t)
+	cm := New(&config.Config{Workers: 4, Timeout: 5 * time.Second}, d)
+
+	openCh := make(chan string, 4)
+	openCh <- fx.proxyAddr  // a working http proxy → stored as http
+	openCh <- "127.0.0.1:1" // refuses connections → validated as nothing, stored nothing
+	close(openCh)
+
+	stored, err := cm.ValidateAndStoreStream(context.Background(), openCh)
+	if err != nil {
+		t.Fatalf("ValidateAndStoreStream: %v", err)
+	}
+	if stored < 1 {
+		t.Fatalf("expected >=1 stored, got %d", stored)
+	}
+	if got, _ := d.GetProxiesByType("http"); !contains(got, fx.proxyAddr) {
+		t.Errorf("discovered proxy not stored as http: %v", got)
+	}
+	// The dead candidate must not have been stored under any type.
+	for _, typ := range []string{"http", "socks4", "socks5"} {
+		if got, _ := d.GetProxiesByType(typ); contains(got, "127.0.0.1:1") {
+			t.Errorf("dead candidate wrongly stored as %s", typ)
+		}
+	}
+}
+
 // A stored proxy that no longer validates is PRUNED on recheck.
 func TestCheckManager_PrunesDeadStored(t *testing.T) {
 	fx := newCheckerFixture(t)

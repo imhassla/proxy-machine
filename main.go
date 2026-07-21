@@ -115,14 +115,7 @@ func runService(args []string) error {
 				return
 			case <-timer.C:
 			}
-			opts := scanner.DiscoverOptions{
-				MinDensity:  cfg.DiscoverMinDensity,
-				MinPortHits: 3,
-				MaxPorts:    12,
-				Workers:     cfg.Workers,
-				Timeout:     cfg.ConnectTimeout,
-			}
-			if _, err := sc.DiscoverNeighbors(ctx, opts); err != nil && ctx.Err() == nil {
+			if err := runDiscoverPass(ctx, manager, sc, cfg); err != nil && ctx.Err() == nil {
 				log.Printf("discover: %v", err)
 			}
 			timer.Reset(cfg.DiscoverInterval)
@@ -261,16 +254,53 @@ func runDiscover(args []string) error {
 		}
 	}()
 
-	n, err := scanner.New(database).DiscoverNeighbors(context.Background(), scanner.DiscoverOptions{
+	manager := checker.New(cfg, database)
+	if err := runDiscoverPass(context.Background(), manager, scanner.New(database), cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// runDiscoverPass runs one neighbor-discovery pass with STREAMING validation: the scanner
+// emits each open neighbor ip:port as it's found, and the checker validates it as every proxy
+// type and stores survivors immediately — so discovered proxies land in the DB continuously,
+// with no wait for a checker cycle or a batch flush. Shared by the --discover background job
+// and the `discover` subcommand.
+func runDiscoverPass(ctx context.Context, manager *checker.CheckManager, sc *scanner.Scanner, cfg *config.Config) error {
+	opts := scanner.DiscoverOptions{
 		MinDensity:  cfg.DiscoverMinDensity,
 		MinPortHits: 3,
 		MaxPorts:    12,
 		Workers:     cfg.Workers,
 		Timeout:     cfg.ConnectTimeout,
-	})
-	if err != nil {
-		return err
 	}
-	log.Printf("discover: done — %d open neighbor ip:ports queued to _scan_results", n)
+
+	// The checker consumes open ip:ports off this channel, validating+storing continuously
+	// while the scan is still running.
+	openCh := make(chan string, 256)
+	var stored int
+	var verr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stored, verr = manager.ValidateAndStoreStream(ctx, openCh)
+	}()
+
+	found, serr := sc.DiscoverNeighborsStream(ctx, opts, func(ipPort string) {
+		select {
+		case openCh <- ipPort:
+		case <-ctx.Done():
+		}
+	})
+	close(openCh)
+	<-done
+
+	if serr != nil {
+		return serr
+	}
+	if verr != nil {
+		return verr
+	}
+	log.Printf("discover: pass done — %d open neighbors found, %d validated proxies stored", found, stored)
 	return nil
 }

@@ -110,36 +110,53 @@ func slash24(hostPort string) (string, bool) {
 	return fmt.Sprintf("%d.%d.%d", ip[0], ip[1], ip[2]), true
 }
 
+// neighborhoodTargets loads the known proxies and derives the (cidrs, ports) to scan. Returns
+// ok=false (after logging) when the pool isn't dense enough yet.
+func (s *Scanner) neighborhoodTargets(o DiscoverOptions) (cidrs []string, ports []int, ok bool, err error) {
+	var known []string
+	for _, typ := range []string{"http", "https", "socks4", "socks5"} {
+		ps, e := s.db.GetProxiesByType(typ)
+		if e != nil {
+			return nil, nil, false, fmt.Errorf("load %s proxies: %w", typ, e)
+		}
+		known = append(known, ps...)
+	}
+	cidrs, ports = deriveNeighborhoods(known, o.MinDensity, o.MinPortHits, o.MaxPorts)
+	if len(cidrs) == 0 || len(ports) == 0 {
+		log.Printf("discover: no dense neighborhoods yet (known=%d, minDensity=%d) — skipping this pass", len(known), o.MinDensity)
+		return nil, nil, false, nil
+	}
+	log.Printf("discover: scanning %d neighbor /24s x %d ports (derived from %d known proxies) through the pool", len(cidrs), len(ports), len(known))
+	return cidrs, ports, true, nil
+}
+
 // DiscoverNeighbors derives neighbor candidates from the proxies already in the DB and
 // port-scans them through the validated pool (anonymously, via socks5/socks4/http egress),
 // writing open ip:ports to _scan_results for the checker to validate as every type. Returns
 // the number of open neighbor ip:ports queued. A no-op (0, nil) when the pool isn't dense
-// enough yet. Safe to call repeatedly — already-known and dead neighbors are simply re-probed.
+// enough yet. Prefer DiscoverNeighborsStream for immediate, continuous validation.
 func (s *Scanner) DiscoverNeighbors(ctx context.Context, o DiscoverOptions) (int, error) {
-	var known []string
-	for _, typ := range []string{"http", "https", "socks4", "socks5"} {
-		ps, err := s.db.GetProxiesByType(typ)
-		if err != nil {
-			return 0, fmt.Errorf("load %s proxies: %w", typ, err)
-		}
-		known = append(known, ps...)
+	cidrs, ports, ok, err := s.neighborhoodTargets(o)
+	if err != nil || !ok {
+		return 0, err
 	}
-	cidrs, ports := deriveNeighborhoods(known, o.MinDensity, o.MinPortHits, o.MaxPorts)
-	if len(cidrs) == 0 || len(ports) == 0 {
-		log.Printf("discover: no dense neighborhoods yet (known=%d, minDensity=%d) — skipping this pass", len(known), o.MinDensity)
-		return 0, nil
-	}
-	log.Printf("discover: scanning %d neighbor /24s x %d ports (derived from %d known proxies) through the pool", len(cidrs), len(ports), len(known))
-	n, err := s.scan(ctx, &Options{
-		CIDRs:    cidrs,
-		Ports:    ports,
-		Workers:  o.Workers,
-		Timeout:  o.Timeout,
-		MaxHosts: o.MaxHosts,
-	})
+	n, err := s.scan(ctx, &Options{CIDRs: cidrs, Ports: ports, Workers: o.Workers, Timeout: o.Timeout, MaxHosts: o.MaxHosts})
 	if err != nil {
 		return n, err
 	}
 	log.Printf("discover: found %d open neighbor ip:ports → queued to _scan_results for validation", n)
 	return n, nil
+}
+
+// DiscoverNeighborsStream is like DiscoverNeighbors but invokes onOpen(ipPort) for EACH open
+// neighbor AS IT IS FOUND, instead of batching to _scan_results. Wire onOpen into immediate
+// validation+storage (e.g. checker.ValidateAndStoreStream) so discovered proxies of every type
+// land in the DB continuously, with no wait for a checker cycle. Returns the count of open
+// ip:ports found.
+func (s *Scanner) DiscoverNeighborsStream(ctx context.Context, o DiscoverOptions, onOpen func(ipPort string)) (int, error) {
+	cidrs, ports, ok, err := s.neighborhoodTargets(o)
+	if err != nil || !ok {
+		return 0, err
+	}
+	return s.scanEmit(ctx, &Options{CIDRs: cidrs, Ports: ports, Workers: o.Workers, Timeout: o.Timeout, MaxHosts: o.MaxHosts}, onOpen)
 }
