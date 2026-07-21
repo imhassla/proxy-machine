@@ -1,31 +1,40 @@
 package scanner
 
 import (
+	"bufio"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"proxymachine/pkg/socks"
 )
 
 // dialFunc opens a TCP connection to addr with the given timeout and context.
 type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
-// prober probes target ip:ports through a rotating list of socks4 proxies.
+// scanProxy is an egress proxy the scanner tunnels port probes through, tagged with its
+// protocol so probe() speaks the right handshake.
+type scanProxy struct {
+	addr string
+	typ  string // "socks5" | "socks4" | "http"
+}
+
+// prober probes target ip:ports through a rotating list of egress proxies (socks5/socks4/http).
 type prober struct {
-	proxies []string
+	proxies []scanProxy
 	step    uint32
 	timeout time.Duration
 	dial    dialFunc
 }
 
-// newProber creates a prober that uses proxies as socks4 relays.
-func newProber(proxies []string, timeout time.Duration, dial dialFunc) *prober {
+// newProber creates a prober that egresses through the given proxies (any mix of
+// socks5/socks4/http). An empty list makes probe() fall back to a DIRECT connect.
+func newProber(proxies []scanProxy, timeout time.Duration, dial dialFunc) *prober {
 	if dial == nil {
 		dial = defaultDial
 	}
@@ -52,42 +61,33 @@ func (p *prober) withTimeout(ctx context.Context) (context.Context, context.Canc
 }
 
 // nextProxy returns the next proxy in the list in round-robin fashion.
-func (p *prober) nextProxy() (string, error) {
+func (p *prober) nextProxy() (scanProxy, error) {
 	if len(p.proxies) == 0 {
-		return "", errors.New("no proxies available")
+		return scanProxy{}, errors.New("no proxies available")
 	}
 	idx := int(atomic.AddUint32(&p.step, 1)-1) % len(p.proxies)
 	return p.proxies[idx], nil
 }
 
-// probe reports whether the target ip:port is open. With socks4 proxies configured it
-// connects THROUGH a rotating proxy (anonymous); with none, it falls back to a DIRECT
-// TCP connect so a fresh install can bootstrap (no proxies to harvest through yet).
+// probe reports whether the target ip:port is open. With egress proxies configured it connects
+// THROUGH a rotating proxy (anonymous), speaking that proxy's protocol — SOCKS5, SOCKS4, or
+// HTTP CONNECT; with none it falls back to a DIRECT TCP connect so a fresh install can
+// bootstrap (no proxies to harvest through yet). A dead/blocking proxy is a closed result, not
+// an error (same semantics as an unreachable target from that vantage).
 func (p *prober) probe(ctx context.Context, j job) (bool, error) {
 	if len(p.proxies) == 0 {
 		return p.probeDirect(ctx, j)
 	}
 	ctx, cancel := p.withTimeout(ctx)
 	defer cancel()
-	proxy, err := p.nextProxy()
+	px, err := p.nextProxy()
 	if err != nil {
 		return false, err
 	}
 
-	proxyHost, proxyPort, err := net.SplitHostPort(proxy)
+	conn, err := p.dial(ctx, "tcp", px.addr)
 	if err != nil {
-		return false, fmt.Errorf("invalid proxy address %q: %w", proxy, err)
-	}
-
-	proxyPortNum, err := strconv.Atoi(proxyPort)
-	if err != nil {
-		return false, fmt.Errorf("invalid proxy port %q: %w", proxyPort, err)
-	}
-
-	addr := net.JoinHostPort(proxyHost, strconv.Itoa(proxyPortNum))
-	conn, err := p.dial(ctx, "tcp", addr)
-	if err != nil {
-		return false, nil // proxy unreachable, treat as closed result.
+		return false, nil // proxy unreachable → treat as closed result
 	}
 	defer conn.Close()
 
@@ -97,28 +97,15 @@ func (p *prober) probe(ctx context.Context, j job) (bool, error) {
 		}
 	}
 
-	targetIP := net.ParseIP(j.ip)
-	if targetIP == nil {
-		return false, fmt.Errorf("invalid target IP %q", j.ip)
+	target := net.JoinHostPort(j.ip, strconv.Itoa(j.port))
+	switch px.typ {
+	case "socks5":
+		return socks.Handshake5(conn, target) == nil, nil
+	case "http":
+		return httpConnectOpen(conn, target), nil
+	default: // socks4 / socks4a
+		return socks.Handshake4(conn, target) == nil, nil
 	}
-	targetIP = targetIP.To4()
-	if targetIP == nil {
-		return false, fmt.Errorf("target IP %q is not IPv4", j.ip)
-	}
-
-	req := buildSocks4Request(uint16(j.port), targetIP)
-	if _, err := conn.Write(req); err != nil {
-		return false, nil
-	}
-
-	// A SOCKS4 reply is exactly 8 bytes; ReadFull avoids a short read being misjudged as
-	// closed (a single Read can return <8 bytes, leaving resp[1]=0 = "rejected").
-	resp := make([]byte, 8)
-	if _, err := io.ReadFull(conn, resp); err != nil {
-		return false, nil
-	}
-	// VN (reply version) must be 0x00 and CD (status) 0x5a (request granted).
-	return resp[0] == 0x00 && resp[1] == 0x5a, nil
 }
 
 // probeDirect reports whether the target ip:port accepts a TCP connection (open),
@@ -136,17 +123,24 @@ func (p *prober) probeDirect(ctx context.Context, j job) (bool, error) {
 	return true, nil
 }
 
-// buildSocks4Request builds a SOCKS4 CONNECT request.
-func buildSocks4Request(port uint16, ip net.IP) []byte {
-	ip = ip.To4()
-	req := make([]byte, 0, 9)
-	req = append(req, 0x04, 0x01)
-	portBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(portBytes, port)
-	req = append(req, portBytes...)
-	req = append(req, ip...)
-	req = append(req, 0x00) // empty userid
-	return req
+// httpConnectOpen tunnels a CONNECT through an HTTP proxy over an established conn: a 2xx
+// status means the proxy opened a connection to target (port open). Anything else — 403/405
+// (CONNECT disabled), 502/503/504 (unreachable) — is closed. Many http proxies restrict
+// CONNECT to 443, so they contribute fewer hits; the ones allowing arbitrary CONNECT widen
+// egress substantially.
+func httpConnectOpen(conn net.Conn, target string) bool {
+	req := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		return false
+	}
+	// Read only the status line; a 2xx is enough to conclude the port is open.
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return false
+	}
+	// "HTTP/1.1 200 Connection established" → fields[1] is the 3-digit status code.
+	fields := strings.Fields(line)
+	return len(fields) >= 2 && len(fields[1]) == 3 && fields[1][0] == '2'
 }
 
 func splitPorts(s string) ([]int, error) {

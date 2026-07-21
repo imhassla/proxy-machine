@@ -124,39 +124,52 @@ func (o *Options) validate() error {
 	return nil
 }
 
-// Scan expands the provided CIDRs and ports and probes each ip:port through
-// alive socks4 proxies stored in the DB. Open ports are written to the
-// scan_results table.
+// Scan expands the provided CIDRs and ports and probes each ip:port through the DB's
+// validated proxy pool, writing open ports to the scan_results table. Thin wrapper over
+// scan (which also returns the count, used by discovery).
 func (s *Scanner) Scan(ctx context.Context, opts *Options) error {
+	_, err := s.scan(ctx, opts)
+	return err
+}
+
+// scan is Scan's implementation; it returns the number of open ip:ports stored.
+func (s *Scanner) scan(ctx context.Context, opts *Options) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if opts == nil {
-		return fmt.Errorf("options are required")
+		return 0, fmt.Errorf("options are required")
 	}
 	if err := opts.validate(); err != nil {
-		return err
+		return 0, err
 	}
 
-	// socks4 proxies let the scan egress anonymously THROUGH them; when none exist yet
-	// (a fresh install — the pipeline can't have harvested any), the prober falls back
-	// to DIRECT probing so the scanner can bootstrap instead of dead-locking on an empty
-	// table nothing has populated.
-	proxies, err := s.db.GetProxiesByType("socks4")
-	if err != nil {
-		return fmt.Errorf("fetch socks4 proxies: %w", err)
+	// Egress anonymously THROUGH the validated pool: rotate over socks5/socks4/http proxies,
+	// speaking each one's protocol. socks5 is the most numerous and reliably tunnels arbitrary
+	// ports; socks4 is the simplest; http contributes the subset that allows arbitrary CONNECT.
+	// When none exist yet (a fresh install — the pipeline can't have harvested any), the prober
+	// falls back to DIRECT probing so the scanner can bootstrap instead of dead-locking.
+	var pool []scanProxy
+	for _, typ := range []string{"socks5", "socks4", "http"} {
+		ps, err := s.db.GetProxiesByType(typ)
+		if err != nil {
+			return 0, fmt.Errorf("fetch %s proxies: %w", typ, err)
+		}
+		for _, a := range ps {
+			pool = append(pool, scanProxy{addr: a, typ: typ})
+		}
 	}
-	if len(proxies) == 0 {
-		log.Printf("WARNING: no socks4 proxies in the DB — scanning DIRECTLY from this host's own IP (not anonymous). Populate socks4 first for anonymous scanning.")
+	if len(pool) == 0 {
+		log.Printf("WARNING: no egress proxies in the DB — scanning DIRECTLY from this host's own IP (not anonymous). Populate the pool first for anonymous scanning.")
 	}
 
 	// Pre-flight: parse + reject IPv6 + bound the host count BEFORE streaming, so a bad
 	// or huge range fails fast (and never materializes / OOMs).
 	if _, err := validateAndCountHosts(opts.CIDRs, opts.MaxHosts); err != nil {
-		return err
+		return 0, err
 	}
 
-	p := newProber(proxies, opts.Timeout, nil)
+	p := newProber(pool, opts.Timeout, nil)
 
 	jobs := make(chan job)
 	go func() {
@@ -183,11 +196,11 @@ func (s *Scanner) Scan(ctx context.Context, opts *Options) error {
 	}
 
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 
 	if len(open) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	// Results arrive in nondeterministic order from the concurrent worker pool.
@@ -195,13 +208,13 @@ func (s *Scanner) Scan(ctx context.Context, opts *Options) error {
 	sortIPPorts(open)
 
 	if err := s.db.EnsureScanResultsTable(); err != nil {
-		return fmt.Errorf("ensure scan results table: %w", err)
+		return 0, fmt.Errorf("ensure scan results table: %w", err)
 	}
 	if err := s.db.StoreScanResults(open); err != nil {
-		return fmt.Errorf("store scan results: %w", err)
+		return 0, fmt.Errorf("store scan results: %w", err)
 	}
 
-	return nil
+	return len(open), nil
 }
 
 // sortIPPorts orders "ip:port" entries by numeric IP then numeric port, so a

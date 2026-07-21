@@ -44,13 +44,27 @@ curl --socks5-hostname 127.0.0.1:1080 https://httpbin.org/ip  # via SOCKS5 liste
 
 # One-shot port scan → _scan_results (the checker validates them next cycle):
 ./proxymachine scan -cidr 192.0.2.0/24 -port 8080,3128 --dbPath data.db
+
+# Expand the pool from what you already have: scan the /24 neighbors of known proxies
+# (on their recurring ports) through the pool → _scan_results (validated next cycle):
+./proxymachine discover --dbPath data.db -workers 400 -discoverMinDensity 3
 ```
 
-The scan probes each `ip:port`. If the DB already holds validated **socks4** proxies it
-egresses **through** one (anonymous); otherwise — including every fresh install, since no
-component currently populates the socks4 table — it falls back to a **direct** TCP probe
-so it can bootstrap. IPv6 CIDRs are rejected; expansion is streamed and capped
+The scan probes each `ip:port` **through the validated pool, anonymously** — it rotates over
+the stored **socks5 / socks4 / http** proxies, speaking each one's protocol (SOCKS5 CONNECT,
+SOCKS4 CONNECT, or HTTP `CONNECT`; an open port is a granted CONNECT / `2xx`). socks5 is the
+most numerous and reliably tunnels arbitrary ports; http contributes those that allow
+arbitrary CONNECT. When the pool is empty (a fresh install) it falls back to a **direct** TCP
+probe so it can bootstrap. IPv6 CIDRs are rejected; expansion is streamed and capped
 (`-maxHosts`, default 1,048,576) so a wide range can't OOM.
+
+**Neighbor discovery** turns the pool into its own seed list. `discover` groups the stored
+proxies by /24, finds the blocks a provider clearly allocated to proxies (≥ `-discoverMinDensity`
+distinct proxies in a /24), and port-scans every neighbor in those blocks on the ports that
+recur there — through the pool, so it's anonymous. Open `ip:port`s go to `_scan_results` and the
+checker validates each as **every** type (http/socks4/socks5), so a single discovery pass can
+surface new proxies of all types. Run it one-shot (above), or enable the continuous background
+job on the service with `--discover` (cadence `--discoverInterval`, default 30m).
 
 ## Configuration
 
@@ -67,6 +81,9 @@ form accepts a `[database] path = …` section key.
 | `--maxProxyAge` | `24h` | drop proxies not re-validated within this window (0 disables) |
 | `--maxRecheckInterval` | `15m` | cap on adaptive per-proxy recheck cadence (0 = recheck every cycle) |
 | `--honeypot` | `true` | reject proxies that tamper with (inject into) HTTP responses |
+| `--discover` | `false` | background job: port-scan the /24 neighbors of known proxies (through the pool) to expand it |
+| `--discoverInterval` | `30m` | neighbor-discovery cadence |
+| `--discoverMinDensity` | `3` | min known proxies in a /24 for its neighbors to be scanned |
 | `--relayAddr` | `127.0.0.1:3333` | HTTP relay bind (forwards HTTP + tunnels HTTPS via CONNECT) |
 | `--apiAddr` | `127.0.0.1:8000` | API bind |
 | `--socksAddr` | `127.0.0.1:1080` | client SOCKS5 listener bind (CONNECT + UDP ASSOCIATE; `off` to disable) |

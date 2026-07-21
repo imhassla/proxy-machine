@@ -28,6 +28,13 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "discover" {
+		if err := runDiscover(os.Args[2:]); err != nil {
+			log.Fatalf("discover: %v", err)
+		}
+		return
+	}
+
 	if err := runService(os.Args[1:]); err != nil {
 		log.Fatalf("service: %v", err)
 	}
@@ -86,6 +93,39 @@ func runService(args []string) error {
 		defer close(geoDone)
 		if geoEnricher != nil {
 			_ = geoEnricher.Run(ctx)
+		}
+	}()
+
+	// Optional neighbor-discovery job: periodically expand the pool by port-scanning the /24
+	// neighbors of known proxies (on their recurring ports) THROUGH the validated pool
+	// (socks5/socks4/http egress), feeding open ip:ports to the checker. Off unless --discover.
+	discoverDone := make(chan struct{})
+	go func() {
+		defer close(discoverDone)
+		if !cfg.Discover {
+			return
+		}
+		log.Printf("discovery job enabled: scanning known-proxy neighbors every %s (minDensity=%d)", cfg.DiscoverInterval, cfg.DiscoverMinDensity)
+		sc := scanner.New(database)
+		timer := time.NewTimer(2 * time.Minute) // let the checker populate the pool first
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+			}
+			opts := scanner.DiscoverOptions{
+				MinDensity:  cfg.DiscoverMinDensity,
+				MinPortHits: 3,
+				MaxPorts:    12,
+				Workers:     cfg.Workers,
+				Timeout:     cfg.ConnectTimeout,
+			}
+			if _, err := sc.DiscoverNeighbors(ctx, opts); err != nil && ctx.Err() == nil {
+				log.Printf("discover: %v", err)
+			}
+			timer.Reset(cfg.DiscoverInterval)
 		}
 	}()
 
@@ -153,6 +193,7 @@ func runService(args []string) error {
 	<-socksDone
 	<-checkerDone
 	<-geoDone
+	<-discoverDone
 
 	if err := database.Close(); err != nil {
 		log.Printf("close database: %v", err)
@@ -193,4 +234,43 @@ func runScanner(args []string) error {
 
 	s := scanner.New(database)
 	return s.Scan(context.Background(), opts)
+}
+
+// runDiscover performs ONE neighbor-discovery pass: derive /24 neighbors of the proxies
+// already in the DB and port-scan them through the validated pool (socks5/socks4/http egress),
+// queuing open ip:ports to _scan_results for the checker to validate. Use it as a one-shot
+// against a running instance's DB (the live checker picks up the results), or enable the
+// continuous background job with --discover on the service. Flags: --dbPath, --workers,
+// --connectTimeout, --discoverMinDensity.
+func runDiscover(args []string) error {
+	cfg, err := config.Load(args)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	database, err := db.Open(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	if err := database.Init(); err != nil {
+		_ = database.Close()
+		return fmt.Errorf("init database: %w", err)
+	}
+	defer func() {
+		if err := database.Close(); err != nil {
+			log.Printf("close database: %v", err)
+		}
+	}()
+
+	n, err := scanner.New(database).DiscoverNeighbors(context.Background(), scanner.DiscoverOptions{
+		MinDensity:  cfg.DiscoverMinDensity,
+		MinPortHits: 3,
+		MaxPorts:    12,
+		Workers:     cfg.Workers,
+		Timeout:     cfg.ConnectTimeout,
+	})
+	if err != nil {
+		return err
+	}
+	log.Printf("discover: done — %d open neighbor ip:ports queued to _scan_results", n)
+	return nil
 }

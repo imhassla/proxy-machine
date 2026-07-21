@@ -20,7 +20,15 @@ type mockDB struct {
 }
 
 func (m *mockDB) GetProxiesByType(proxyType string) ([]string, error) {
-	return m.proxies, m.errGet
+	if m.errGet != nil {
+		return nil, m.errGet
+	}
+	// Return the seeded proxies as socks4 only, so tests egress via the fakeConn's SOCKS4
+	// reply bytes (the scanner now loads socks5/socks4/http, but these tests speak socks4).
+	if proxyType == "socks4" {
+		return m.proxies, nil
+	}
+	return nil, nil
 }
 
 func (m *mockDB) EnsureScanResultsTable() error {
@@ -188,7 +196,7 @@ func TestWorkerPoolBounded(t *testing.T) {
 }
 
 func TestProbeReportsOpen(t *testing.T) {
-	p := newProber([]string{"127.0.0.1:1080"}, time.Second, func(ctx context.Context, network, addr string) (net.Conn, error) {
+	p := newProber([]scanProxy{{addr: "127.0.0.1:1080", typ: "socks4"}}, time.Second, func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return &fakeConn{}, nil
 	})
 	open, err := p.probe(context.Background(), job{ip: "1.2.3.4", port: 80})
@@ -201,7 +209,7 @@ func TestProbeReportsOpen(t *testing.T) {
 }
 
 func TestProbeReportsClosed(t *testing.T) {
-	p := newProber([]string{"127.0.0.1:1080"}, time.Second, func(ctx context.Context, network, addr string) (net.Conn, error) {
+	p := newProber([]scanProxy{{addr: "127.0.0.1:1080", typ: "socks4"}}, time.Second, func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return &fakeConn{failHandshake: true}, nil
 	})
 	open, err := p.probe(context.Background(), job{ip: "1.2.3.4", port: 80})
@@ -418,7 +426,7 @@ func (f *fakeConn) Read(b []byte) (int, error) {
 // A truncated SOCKS4 reply (fewer than 8 bytes) must be judged CLOSED, not falsely open:
 // io.ReadFull rejects the short read that a single conn.Read would have accepted.
 func TestProbeShortSocks4ReplyIsClosed(t *testing.T) {
-	p := newProber([]string{"127.0.0.1:1080"}, time.Second, func(ctx context.Context, network, addr string) (net.Conn, error) {
+	p := newProber([]scanProxy{{addr: "127.0.0.1:1080", typ: "socks4"}}, time.Second, func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return &fakeConn{shortReply: true}, nil
 	})
 	open, err := p.probe(context.Background(), job{ip: "1.2.3.4", port: 80})

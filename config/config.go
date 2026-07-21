@@ -77,6 +77,15 @@ type Config struct {
 	// country/ASN/ISP via an online lookup (ip-api.com), independent of the checker.
 	GeoLookup bool
 
+	// Discover, when true, runs a background job that expands the proxy pool by port-scanning
+	// the /24 neighbors of already-known proxies (on their recurring ports) through the
+	// validated pool, feeding open ip:ports to the checker. Off by default (extra outbound scan
+	// traffic). DiscoverInterval is the cadence; DiscoverMinDensity is the minimum known
+	// proxies in a /24 for it to be treated as a provider block worth scanning.
+	Discover           bool
+	DiscoverInterval   time.Duration
+	DiscoverMinDensity int
+
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
 	// loopback default bind; a non-loopback RelayAddr should always set credentials).
@@ -103,12 +112,14 @@ func Load(args []string) (*Config, error) {
 		MaxRecheckInterval: 15 * time.Minute,
 		HoneypotCheck:      true,
 		GeoLookup:          true,
+		DiscoverInterval:   30 * time.Minute,
+		DiscoverMinDensity: 3,
 	}
 
 	var configPath string
-	var workers, maxFailover, chainLength int
-	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge, maxRecheckInterval time.Duration
-	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg, geoArg string
+	var workers, maxFailover, chainLength, discoverMinDensity int
+	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge, maxRecheckInterval, discoverInterval time.Duration
+	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg, geoArg, discoverArg string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
@@ -129,6 +140,9 @@ func Load(args []string) (*Config, error) {
 	fs.StringVar(&sourcesArg, "sources", "", "Comma-separated proxy-list URLs (replaces the built-in sources)")
 	fs.StringVar(&honeypotArg, "honeypot", "", "Content-tamper detection: true|false (default true)")
 	fs.StringVar(&geoArg, "geo", "", "Background geo/ASN enrichment via online lookup: true|false (default true)")
+	fs.StringVar(&discoverArg, "discover", "", "Background neighbor-discovery job (scan /24 neighbors of known proxies through the pool): true|false (default false)")
+	fs.DurationVar(&discoverInterval, "discoverInterval", -1, "Neighbor-discovery cadence (default 30m)")
+	fs.IntVar(&discoverMinDensity, "discoverMinDensity", -1, "Min known proxies in a /24 to scan its neighbors (default 3)")
 	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
 	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
 
@@ -196,6 +210,15 @@ func Load(args []string) (*Config, error) {
 	}
 	if geoArg != "" {
 		cfg.GeoLookup = geoArg == "true" || geoArg == "1" || geoArg == "yes"
+	}
+	if discoverArg != "" {
+		cfg.Discover = discoverArg == "true" || discoverArg == "1" || discoverArg == "yes"
+	}
+	if discoverInterval >= 0 {
+		cfg.DiscoverInterval = discoverInterval
+	}
+	if discoverMinDensity >= 0 {
+		cfg.DiscoverMinDensity = discoverMinDensity
 	}
 	if proxyUser != "" {
 		cfg.ProxyUser = proxyUser
