@@ -5,14 +5,76 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"proxymachine/pkg/socks"
 )
+
+// grantAllSentinel is an UNROUTABLE target (TEST-NET-1, RFC 5737) on an arbitrary high port.
+// No proxy can actually connect there, so any proxy that reports it "open" is lying (grants
+// every CONNECT) and must be dropped before it fabricates false-positive open ports.
+var grantAllSentinel = job{ip: "192.0.2.1", port: 65432}
+
+// screenGrantAll probes every proxy against the unroutable sentinel and returns only the
+// honest ones (those that DON'T claim it's open). Concurrent; bounded by the same timeout.
+func screenGrantAll(ctx context.Context, pool []scanProxy, timeout time.Duration) []scanProxy {
+	workers := 200
+	if workers > len(pool) {
+		workers = len(pool)
+	}
+	in := make(chan scanProxy)
+	type res struct {
+		px       scanProxy
+		grantAll bool
+	}
+	out := make(chan res, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for px := range in {
+				open, _ := newProber([]scanProxy{px}, timeout, nil).probe(ctx, grantAllSentinel)
+				select {
+				case out <- res{px, open}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(in)
+		for _, px := range pool {
+			select {
+			case in <- px:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() { wg.Wait(); close(out) }()
+
+	clean := make([]scanProxy, 0, len(pool))
+	dropped := 0
+	for r := range out {
+		if r.grantAll {
+			dropped++
+			continue
+		}
+		clean = append(clean, r.px)
+	}
+	if dropped > 0 {
+		log.Printf("scan: screened out %d/%d grant-all egress proxies (reported an unroutable sentinel as open)", dropped, len(pool))
+	}
+	return clean
+}
 
 // dialFunc opens a TCP connection to addr with the given timeout and context.
 type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)

@@ -113,6 +113,18 @@ func TestProbeThroughHTTPConnect(t *testing.T) {
 	}
 }
 
+// screenGrantAll must drop a proxy that grants the unroutable sentinel (a liar) and keep one
+// that refuses it (honest).
+func TestScreenGrantAll(t *testing.T) {
+	liar := serveOnce(t, fakeSocks5(true))    // grants every CONNECT, incl. the sentinel
+	honest := serveOnce(t, fakeSocks5(false)) // refuses
+	pool := []scanProxy{{addr: liar, typ: "socks5"}, {addr: honest, typ: "socks5"}}
+	clean := screenGrantAll(context.Background(), pool, 2*time.Second)
+	if len(clean) != 1 || clean[0].addr != honest {
+		t.Fatalf("screen kept %v, want only the honest proxy %s", clean, honest)
+	}
+}
+
 func TestDeriveNeighborhoods(t *testing.T) {
 	known := []string{
 		// 9.9.9.0/24 is a dense block: 3 distinct proxies, ports 8080 (x2) and 3128 (x1).

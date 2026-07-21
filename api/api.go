@@ -181,12 +181,20 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	discovered := 0
+	if s.db != nil {
+		if n, err := s.db.CountDiscovered(); err == nil {
+			discovered = n
+		}
+	}
 	out := struct {
-		Proxies map[string]int   `json:"proxies"`
-		Relay   metrics.Snapshot `json:"relay"`
+		Proxies    map[string]int   `json:"proxies"`
+		Discovered int              `json:"discovered"` // unique proxies attributed to neighbor discovery
+		Relay      metrics.Snapshot `json:"relay"`
 	}{
-		Proxies: s.proxyCounts(),
-		Relay:   s.metrics.Snapshot(),
+		Proxies:    s.proxyCounts(),
+		Discovered: discovered,
+		Relay:      s.metrics.Snapshot(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

@@ -175,6 +175,33 @@ func TestCheckManager_ValidateAndStoreStream(t *testing.T) {
 	}
 }
 
+// Discovery attribution: a NET-NEW survivor is recorded in _discovered (counted once); a
+// survivor that already existed in the pool is not, and a second pass doesn't double-count.
+func TestValidateAndStoreStream_Attribution(t *testing.T) {
+	fx := newCheckerFixture(t)
+	defer fx.cleanup()
+	d := newTestDB(t)
+	cm := New(&config.Config{Workers: 4, Timeout: 5 * time.Second}, d)
+
+	run := func() {
+		ch := make(chan string, 1)
+		ch <- fx.proxyAddr
+		close(ch)
+		if _, err := cm.ValidateAndStoreStream(context.Background(), ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run() // first time the proxy is seen → net-new → counted
+	if n, _ := d.CountDiscovered(); n != 1 {
+		t.Fatalf("first pass: discovered = %d, want 1 (net-new http)", n)
+	}
+	run() // now already stored → not net-new, must not re-count
+	if n, _ := d.CountDiscovered(); n != 1 {
+		t.Fatalf("second pass: discovered = %d, want still 1 (no double-count)", n)
+	}
+}
+
 // A stored proxy that no longer validates is PRUNED on recheck.
 func TestCheckManager_PrunesDeadStored(t *testing.T) {
 	fx := newCheckerFixture(t)

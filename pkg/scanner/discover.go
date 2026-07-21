@@ -140,7 +140,7 @@ func (s *Scanner) DiscoverNeighbors(ctx context.Context, o DiscoverOptions) (int
 	if err != nil || !ok {
 		return 0, err
 	}
-	n, err := s.scan(ctx, &Options{CIDRs: cidrs, Ports: ports, Workers: o.Workers, Timeout: o.Timeout, MaxHosts: o.MaxHosts})
+	n, err := s.scan(ctx, &Options{CIDRs: cidrs, Ports: ports, Workers: o.Workers, Timeout: o.Timeout, MaxHosts: o.MaxHosts, ScreenGrantAll: true})
 	if err != nil {
 		return n, err
 	}
@@ -158,5 +158,5 @@ func (s *Scanner) DiscoverNeighborsStream(ctx context.Context, o DiscoverOptions
 	if err != nil || !ok {
 		return 0, err
 	}
-	return s.scanEmit(ctx, &Options{CIDRs: cidrs, Ports: ports, Workers: o.Workers, Timeout: o.Timeout, MaxHosts: o.MaxHosts}, onOpen)
+	return s.scanEmit(ctx, &Options{CIDRs: cidrs, Ports: ports, Workers: o.Workers, Timeout: o.Timeout, MaxHosts: o.MaxHosts, ScreenGrantAll: true}, onOpen)
 }

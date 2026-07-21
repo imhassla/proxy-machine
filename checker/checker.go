@@ -537,22 +537,37 @@ func (cm *CheckManager) ValidateAndStoreStream(ctx context.Context, ipPorts <-ch
 		}
 	}()
 
-	var stored int
+	var processed, stored, fresh int
+	lastLog := time.Now()
 	for r := range cm.validateStreamChan(ctx, sip, 0, in) {
+		processed++
+		// Periodic progress so a long streaming pass isn't a silent black box.
+		if time.Since(lastLog) >= 30*time.Second {
+			log.Printf("discover: validated %d candidates, stored %d (%d net-new) so far", processed, stored, fresh)
+			lastLog = time.Now()
+		}
 		if !r.ok || cm.db == nil {
 			continue
 		}
+		// Attribution: a survivor not already in its type table is a NET-NEW proxy that
+		// discovery contributed — record it so the dashboard can show discovery's unique yield.
+		exists, _ := cm.db.ProxyExists(r.job.typ, r.job.addr)
 		now := time.Now().UTC().Format("2006-01-02 15:04:05")
 		if err := cm.db.StoreProxyTier(r.job.typ, r.job.addr, round2(r.rt), now, r.anon); err != nil {
 			log.Printf("discover: store %s %s: %v", r.job.typ, r.job.addr, err)
 			continue
 		}
 		stored++
+		if !exists { // wasn't in the pool before → net-new proxy from discovery
+			fresh++
+			_ = cm.db.RecordDiscovered(r.job.typ, r.job.addr, now)
+		}
 		if stored%25 == 0 {
 			cm.refreshCacheFromDB() // push fresh survivors to the relay mid-stream
 		}
 	}
 	cm.refreshCacheFromDB()
+	log.Printf("discover: validated %d candidates, stored %d proxies (%d net-new)", processed, stored, fresh)
 	return stored, nil
 }
 

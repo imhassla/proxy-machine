@@ -242,12 +242,12 @@
     el.className = isErr ? 'error' : '';
   }
 
-  function renderProxyCounts(proxies) {
+  function renderProxyCounts(proxies, discovered) {
     var el = document.getElementById('proxy-counts');
     if (!proxies) { el.innerHTML = '<span class="error">no data</span>'; return; }
     var types = ['http', 'https', 'socks4', 'socks5'];
-    var maxVal = 0;
-    types.forEach(function(t) { var v = proxies[t] || 0; if (v > maxVal) maxVal = v; });
+    var maxVal = 0, total = 0;
+    types.forEach(function(t) { var v = proxies[t] || 0; if (v > maxVal) maxVal = v; total += v; });
     var html = '';
     types.forEach(function(t) {
       var count = proxies[t] || 0;
@@ -257,6 +257,10 @@
       html += '<span class="bar-count">' + count + '</span>';
       html += '</div>';
     });
+    // TOTAL + discovery attribution (unique proxies the neighbor-discovery job contributed).
+    html += '<div class="net-row"><span class="net-name">TOTAL</span><span class="net-count">' + total + '</span></div>';
+    var disc = discovered || 0;
+    html += '<div class="net-row"><span class="net-name ok">↳ via DISCOVER</span><span class="net-count ok">' + disc + '</span></div>';
     el.innerHTML = html;
   }
 
@@ -376,7 +380,7 @@
     fetch('/stats')
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        renderProxyCounts(d.proxies);
+        renderProxyCounts(d.proxies, d.discovered);
         renderRelayLine(d.relay);
         setStatus('LAST POLL: ' + now, false);
       })

@@ -30,6 +30,11 @@ type Options struct {
 	Timeout  time.Duration
 	DBPath   string
 	MaxHosts int // cap on expanded host IPs (<=0 → defaultMaxHosts); guards against OOM
+
+	// ScreenGrantAll, when set, pre-screens the egress pool and drops "grant-all" proxies
+	// (which report EVERY CONNECT as success) before scanning — they otherwise fabricate huge
+	// numbers of false-open ports. Used by discovery; off for the plain scan subcommand.
+	ScreenGrantAll bool
 }
 
 // Scanner orchestrates port scanning through socks4 proxies.
@@ -187,6 +192,12 @@ func (s *Scanner) scanEmit(ctx context.Context, opts *Options, emit func(ipPort 
 	}
 	if len(pool) == 0 {
 		log.Printf("WARNING: no egress proxies in the DB — scanning DIRECTLY from this host's own IP (not anonymous). Populate the pool first for anonymous scanning.")
+	} else if opts.ScreenGrantAll {
+		// Drop liars that report every CONNECT as open BEFORE they fabricate false positives.
+		pool = screenGrantAll(ctx, pool, opts.Timeout)
+		if len(pool) == 0 {
+			log.Printf("WARNING: every egress proxy failed grant-all screening — falling back to DIRECT probing")
+		}
 	}
 
 	// Pre-flight: parse + reject IPv6 + bound the host count BEFORE streaming, so a bad

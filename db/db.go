@@ -118,6 +118,66 @@ func (d *DB) StoreProxyTier(proxyType string, proxy string, responseTime float64
 	return nil
 }
 
+// EnsureDiscoveredTable creates the attribution table that records proxies FIRST found by the
+// neighbor-discovery job (as opposed to public lists / rechecks), so the dashboard can show
+// discovery's unique contribution.
+func (d *DB) EnsureDiscoveredTable() error {
+	if d.conn == nil {
+		return fmt.Errorf("database connection is nil")
+	}
+	_, err := d.conn.Exec(`CREATE TABLE IF NOT EXISTS _discovered (
+		typ TEXT,
+		proxy TEXT,
+		first_seen TEXT,
+		PRIMARY KEY (typ, proxy)
+	)`)
+	if err != nil {
+		return fmt.Errorf("create discovered table: %w", err)
+	}
+	return nil
+}
+
+// ProxyExists reports whether the given (type, proxy) is already stored — used by discovery to
+// tell a NET-NEW proxy from one the pipeline already had.
+func (d *DB) ProxyExists(proxyType, proxy string) (bool, error) {
+	if err := validateProxyType(proxyType); err != nil {
+		return false, err
+	}
+	var one int
+	err := d.conn.QueryRow(fmt.Sprintf("SELECT 1 FROM %s WHERE proxy = ? LIMIT 1", proxyType), proxy).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("proxy exists %s: %w", proxyType, err)
+	}
+	return true, nil
+}
+
+// RecordDiscovered marks a (type, proxy) as first found by neighbor discovery (idempotent).
+func (d *DB) RecordDiscovered(proxyType, proxy, firstSeen string) error {
+	if err := d.EnsureDiscoveredTable(); err != nil {
+		return err
+	}
+	_, err := d.conn.Exec("INSERT OR IGNORE INTO _discovered (typ, proxy, first_seen) VALUES (?, ?, ?)", proxyType, proxy, firstSeen)
+	if err != nil {
+		return fmt.Errorf("record discovered: %w", err)
+	}
+	return nil
+}
+
+// CountDiscovered returns the number of unique proxies attributed to neighbor discovery.
+func (d *DB) CountDiscovered() (int, error) {
+	if err := d.EnsureDiscoveredTable(); err != nil {
+		return 0, err
+	}
+	var n int
+	if err := d.conn.QueryRow("SELECT COUNT(*) FROM _discovered").Scan(&n); err != nil {
+		return 0, fmt.Errorf("count discovered: %w", err)
+	}
+	return n, nil
+}
+
 // GetProxiesByType returns the proxy addresses stored for the given proxy type.
 func (d *DB) GetProxiesByType(proxyType string) ([]string, error) {
 	if err := validateProxyType(proxyType); err != nil {
