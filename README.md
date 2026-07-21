@@ -45,9 +45,12 @@ curl --socks5-hostname 127.0.0.1:1080 https://httpbin.org/ip  # via SOCKS5 liste
 # One-shot port scan → _scan_results (the checker validates them next cycle):
 ./proxymachine scan -cidr 192.0.2.0/24 -port 8080,3128 --dbPath data.db
 
-# Expand the pool from what you already have: scan the /24 neighbors of known proxies
-# (on their recurring ports) through the pool → _scan_results (validated next cycle):
-./proxymachine discover --dbPath data.db -workers 400 -discoverMinDensity 3
+# Expand the pool from what you already have: derive candidates from known proxies
+# (sequential IPs, adjacent ports) and validate them, storing net-new ones directly:
+./proxymachine discover --dbPath data.db -workers 100
+
+# Measure any candidate-generation strategy: pipe ip:port lines in, read "stored Y (Z net-new)":
+printf '1.2.3.4:8080\n1.2.3.5:8080\n' | ./proxymachine validate --dbPath data.db
 ```
 
 The scan probes each `ip:port` **through the validated pool, anonymously** — it rotates over
@@ -89,9 +92,14 @@ form accepts a `[database] path = …` section key.
 | `--maxProxyAge` | `24h` | drop proxies not re-validated within this window (0 disables) |
 | `--maxRecheckInterval` | `15m` | cap on adaptive per-proxy recheck cadence (0 = recheck every cycle) |
 | `--honeypot` | `true` | reject proxies that tamper with (inject into) HTTP responses |
-| `--discover` | `false` | background job: port-scan the /24 neighbors of known proxies (through the pool) to expand it |
-| `--discoverInterval` | `30m` | neighbor-discovery cadence |
-| `--discoverMinDensity` | `3` | min known proxies in a /24 for its neighbors to be scanned |
+| `--discover` | `false` | background job: expand the pool from known proxies (validate-only strategies below) |
+| `--discoverInterval` | `30m` | discovery cadence (`0` = continuous, pass after pass) |
+| `--discoverExpandSample` | `400` | known proxies sampled per pass for expansion |
+| `--discoverSeqSpan` | `4` | sequential-IP: test ip ± N on the same port |
+| `--discoverPortWindow` | `6` | port-window: test port ± N on the same host |
+| `--discoverAdaptiveRounds` | `2` | follow-up rounds that widen around each found proxy to grab whole blocks (`0` off) |
+| `--discoverScan` | `false` | also run the expensive /24 neighbor port-scan (low yield) |
+| `--discoverMinDensity` | `3` | min known proxies in a /24 to scan its neighbors (`--discoverScan` only) |
 | `--relayAddr` | `127.0.0.1:3333` | HTTP relay bind (forwards HTTP + tunnels HTTPS via CONNECT) |
 | `--apiAddr` | `127.0.0.1:8000` | API bind |
 | `--socksAddr` | `127.0.0.1:1080` | client SOCKS5 listener bind (CONNECT + UDP ASSOCIATE; `off` to disable) |
