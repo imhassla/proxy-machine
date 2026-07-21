@@ -105,7 +105,11 @@ func runService(args []string) error {
 		if !cfg.Discover {
 			return
 		}
-		log.Printf("discovery job enabled: scanning known-proxy neighbors every %s (minDensity=%d)", cfg.DiscoverInterval, cfg.DiscoverMinDensity)
+		mode := cfg.DiscoverInterval.String()
+		if cfg.DiscoverInterval <= 0 {
+			mode = "continuous (pass after pass)"
+		}
+		log.Printf("discovery job enabled: scanning known-proxy neighbors %s (minDensity=%d)", mode, cfg.DiscoverMinDensity)
 		sc := scanner.New(database)
 		timer := time.NewTimer(2 * time.Minute) // let the checker populate the pool first
 		defer timer.Stop()
@@ -115,10 +119,17 @@ func runService(args []string) error {
 				return
 			case <-timer.C:
 			}
+			// A pass runs to completion (never interrupted by the interval); the interval is the
+			// gap AFTER it finishes before the next pass. DiscoverInterval<=0 means loop pass
+			// after pass with only a small floor so an empty/instant pass can't hot-spin.
 			if err := runDiscoverPass(ctx, manager, sc, cfg); err != nil && ctx.Err() == nil {
 				log.Printf("discover: %v", err)
 			}
-			timer.Reset(cfg.DiscoverInterval)
+			gap := cfg.DiscoverInterval
+			if gap <= 0 {
+				gap = 10 * time.Second
+			}
+			timer.Reset(gap)
 		}
 	}()
 
