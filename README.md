@@ -58,13 +58,21 @@ arbitrary CONNECT. When the pool is empty (a fresh install) it falls back to a *
 probe so it can bootstrap. IPv6 CIDRs are rejected; expansion is streamed and capped
 (`-maxHosts`, default 1,048,576) so a wide range can't OOM.
 
-**Neighbor discovery** turns the pool into its own seed list. `discover` groups the stored
-proxies by /24, finds the blocks a provider clearly allocated to proxies (≥ `-discoverMinDensity`
-distinct proxies in a /24), and port-scans every neighbor in those blocks on the ports that
-recur there — through the pool, so it's anonymous. Open `ip:port`s go to `_scan_results` and the
-checker validates each as **every** type (http/socks4/socks5), so a single discovery pass can
-surface new proxies of all types. Run it one-shot (above), or enable the continuous background
-job on the service with `--discover` (cadence `--discoverInterval`, default 30m).
+**Discovery** turns the pool into its own seed list. Providers allocate proxies in blocks —
+contiguous IPs and contiguous port ranges on a host — but public lists capture only a slice, so
+the neighbors are unharvested. Each `discover` pass samples the known pool (`-discoverExpandSample`)
+and expands it three ways, then validates every candidate as **every** type (http/socks4/socks5),
+storing survivors immediately and attributing net-new ones:
+
+- **sequential-IP** — the same port on adjacent IPs (ip ± `-discoverSeqSpan`)
+- **port-window** — adjacent ports on the same host (port ± `-discoverPortWindow`)
+- **common-port** — a curated set of frequent proxy ports on each known host
+
+These are validate-only (no port scan) and in testing found net-new proxies at **hundreds of
+times** the rate of a blind neighbor scan. `-discoverScan` additionally runs the old (expensive,
+low-yield) /24 neighbor port-scan through the pool. Run one-shot (`discover`) or as a continuous
+background job (`--discover`; `--discoverInterval 0` loops pass after pass). The `validate`
+subcommand (reads `ip:port` from stdin) is the instrument used to measure a strategy's yield.
 
 ## Configuration
 

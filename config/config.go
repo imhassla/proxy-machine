@@ -86,6 +86,15 @@ type Config struct {
 	DiscoverInterval   time.Duration
 	DiscoverMinDensity int
 
+	// Discovery candidate strategies (validate-only, high-yield, no port scan): each pass
+	// expands a shuffled sample of DiscoverExpandSample known proxies into sequential-IP
+	// neighbors (same port, ip ± DiscoverSeqSpan) and common-port variants, then validates them.
+	// DiscoverScan additionally runs the expensive /24 neighbor port-scan (low yield; off by default).
+	DiscoverExpandSample int
+	DiscoverSeqSpan      int
+	DiscoverPortWindow   int
+	DiscoverScan         bool
+
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
 	// loopback default bind; a non-loopback RelayAddr should always set credentials).
@@ -97,29 +106,32 @@ type Config struct {
 // args should typically be os.Args[1:].
 func Load(args []string) (*Config, error) {
 	cfg := &Config{
-		Workers:            50,
-		Timeout:            30 * time.Second,
-		ConnectTimeout:     5 * time.Second,
-		DBPath:             "data.db",
-		CheckInterval:      60 * time.Second,
-		RelayAddr:          "127.0.0.1:3333",
-		APIAddr:            "127.0.0.1:8000",
-		SocksAddr:          "127.0.0.1:1080",
-		MaxFailover:        5,
-		ChainLength:        1,
-		StickyTTL:          10 * time.Minute,
-		MaxProxyAge:        24 * time.Hour,
-		MaxRecheckInterval: 15 * time.Minute,
-		HoneypotCheck:      true,
-		GeoLookup:          true,
-		DiscoverInterval:   30 * time.Minute,
-		DiscoverMinDensity: 3,
+		Workers:              50,
+		Timeout:              30 * time.Second,
+		ConnectTimeout:       5 * time.Second,
+		DBPath:               "data.db",
+		CheckInterval:        60 * time.Second,
+		RelayAddr:            "127.0.0.1:3333",
+		APIAddr:              "127.0.0.1:8000",
+		SocksAddr:            "127.0.0.1:1080",
+		MaxFailover:          5,
+		ChainLength:          1,
+		StickyTTL:            10 * time.Minute,
+		MaxProxyAge:          24 * time.Hour,
+		MaxRecheckInterval:   15 * time.Minute,
+		HoneypotCheck:        true,
+		GeoLookup:            true,
+		DiscoverInterval:     30 * time.Minute,
+		DiscoverMinDensity:   3,
+		DiscoverExpandSample: 400,
+		DiscoverSeqSpan:      4,
+		DiscoverPortWindow:   6,
 	}
 
 	var configPath string
-	var workers, maxFailover, chainLength, discoverMinDensity int
+	var workers, maxFailover, chainLength, discoverMinDensity, discoverExpandSample, discoverSeqSpan, discoverPortWindow int
 	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge, maxRecheckInterval, discoverInterval time.Duration
-	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg, geoArg, discoverArg string
+	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg, geoArg, discoverArg, discoverScanArg string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
@@ -141,8 +153,12 @@ func Load(args []string) (*Config, error) {
 	fs.StringVar(&honeypotArg, "honeypot", "", "Content-tamper detection: true|false (default true)")
 	fs.StringVar(&geoArg, "geo", "", "Background geo/ASN enrichment via online lookup: true|false (default true)")
 	fs.StringVar(&discoverArg, "discover", "", "Background neighbor-discovery job (scan /24 neighbors of known proxies through the pool): true|false (default false)")
-	fs.DurationVar(&discoverInterval, "discoverInterval", -1, "Neighbor-discovery cadence (default 30m)")
-	fs.IntVar(&discoverMinDensity, "discoverMinDensity", -1, "Min known proxies in a /24 to scan its neighbors (default 3)")
+	fs.DurationVar(&discoverInterval, "discoverInterval", -1, "Discovery cadence (default 30m; 0 = continuous, pass after pass)")
+	fs.IntVar(&discoverMinDensity, "discoverMinDensity", -1, "Min known proxies in a /24 to scan its neighbors (default 3; --discoverScan only)")
+	fs.IntVar(&discoverExpandSample, "discoverExpandSample", -1, "Known proxies sampled per pass for validate-only expansion (default 400)")
+	fs.IntVar(&discoverSeqSpan, "discoverSeqSpan", -1, "Sequential-IP span: test ip ± N on the same port (default 4)")
+	fs.IntVar(&discoverPortWindow, "discoverPortWindow", -1, "Port-window: test port ± N on the same host (default 6)")
+	fs.StringVar(&discoverScanArg, "discoverScan", "", "Also run the expensive /24 neighbor port-scan (low yield): true|false (default false)")
 	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
 	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
 
@@ -219,6 +235,18 @@ func Load(args []string) (*Config, error) {
 	}
 	if discoverMinDensity >= 0 {
 		cfg.DiscoverMinDensity = discoverMinDensity
+	}
+	if discoverExpandSample >= 0 {
+		cfg.DiscoverExpandSample = discoverExpandSample
+	}
+	if discoverSeqSpan >= 0 {
+		cfg.DiscoverSeqSpan = discoverSeqSpan
+	}
+	if discoverPortWindow >= 0 {
+		cfg.DiscoverPortWindow = discoverPortWindow
+	}
+	if discoverScanArg != "" {
+		cfg.DiscoverScan = discoverScanArg == "true" || discoverScanArg == "1" || discoverScanArg == "yes"
 	}
 	if proxyUser != "" {
 		cfg.ProxyUser = proxyUser

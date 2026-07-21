@@ -4,11 +4,136 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"sort"
 	"strconv"
 	"time"
 )
+
+// commonProxyPorts are the ports proxies most commonly run on — used by port-expansion to test
+// OTHER ports on a host already known to run a proxy (public lists usually list only one).
+var commonProxyPorts = []int{80, 8080, 3128, 8000, 8888, 1080, 8081, 8118, 3129, 8443, 1081, 1082, 9002, 4145, 8090}
+
+// sequentialCandidates expands each "ip:port" into its sequential-IP neighbors on the SAME
+// port (ip ± 1..span) — providers allocate contiguous IP blocks all running the same proxy, so
+// public lists that captured a few of them leave the rest to be found here. IPv4 only.
+func sequentialCandidates(pairs []string, span int) []string {
+	var out []string
+	for _, hp := range pairs {
+		host, portStr, err := net.SplitHostPort(hp)
+		if err != nil {
+			continue
+		}
+		ip := net.ParseIP(host).To4()
+		if ip == nil {
+			continue
+		}
+		for d := -span; d <= span; d++ {
+			if d == 0 {
+				continue
+			}
+			n := int(ip[3]) + d
+			if n < 0 || n > 255 {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%d.%d.%d.%d:%s", ip[0], ip[1], ip[2], n, portStr))
+		}
+	}
+	return out
+}
+
+// portExpansionCandidates emits host:port for every common proxy port on each known host.
+func portExpansionCandidates(hosts []string, ports []int) []string {
+	out := make([]string, 0, len(hosts)*len(ports))
+	for _, h := range hosts {
+		for _, p := range ports {
+			out = append(out, h+":"+strconv.Itoa(p))
+		}
+	}
+	return out
+}
+
+// portWindowCandidates expands each "ip:port" into neighboring PORTS on the SAME host
+// (port ± 1..window) — a host running a proxy on one port often runs more on adjacent ports
+// (providers cluster proxy ports), which common-port expansion misses.
+func portWindowCandidates(pairs []string, window int) []string {
+	var out []string
+	for _, hp := range pairs {
+		host, portStr, err := net.SplitHostPort(hp)
+		if err != nil {
+			continue
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			continue
+		}
+		for d := -window; d <= window; d++ {
+			if d == 0 {
+				continue
+			}
+			p := port + d
+			if p < 1 || p > 65535 {
+				continue
+			}
+			out = append(out, host+":"+strconv.Itoa(p))
+		}
+	}
+	return out
+}
+
+// ExpansionCandidates builds validate-only discovery candidates from a (shuffled) sample of the
+// known pool: sequential-IP neighbors + common-port expansion, deduped. These need no port
+// scan — the caller validates each directly — and in testing yielded net-new proxies at
+// hundreds of times the rate of the /24 neighbor scan. sample<=0 uses the whole pool.
+func (s *Scanner) ExpansionCandidates(sample, seqSpan, portWindow int) ([]string, error) {
+	var pairs []string
+	seenPair := map[string]struct{}{}
+	for _, typ := range []string{"http", "https", "socks4", "socks5"} {
+		ps, err := s.db.GetProxiesByType(typ)
+		if err != nil {
+			return nil, fmt.Errorf("load %s proxies: %w", typ, err)
+		}
+		for _, p := range ps {
+			if _, ok := seenPair[p]; !ok {
+				seenPair[p] = struct{}{}
+				pairs = append(pairs, p)
+			}
+		}
+	}
+	if sample > 0 && len(pairs) > sample {
+		rand.Shuffle(len(pairs), func(i, j int) { pairs[i], pairs[j] = pairs[j], pairs[i] })
+		pairs = pairs[:sample]
+	}
+	hostSet := map[string]struct{}{}
+	var hosts []string
+	for _, hp := range pairs {
+		if h, _, err := net.SplitHostPort(hp); err == nil {
+			if _, ok := hostSet[h]; !ok {
+				hostSet[h] = struct{}{}
+				hosts = append(hosts, h)
+			}
+		}
+	}
+	set := map[string]struct{}{}
+	var out []string
+	add := func(c string) {
+		if _, ok := set[c]; !ok {
+			set[c] = struct{}{}
+			out = append(out, c)
+		}
+	}
+	for _, c := range sequentialCandidates(pairs, seqSpan) {
+		add(c)
+	}
+	for _, c := range portWindowCandidates(pairs, portWindow) {
+		add(c)
+	}
+	for _, c := range portExpansionCandidates(hosts, commonProxyPorts) {
+		add(c)
+	}
+	return out, nil
+}
 
 // DiscoverOptions tunes neighbor discovery — deriving new scan targets from the proxies
 // already in the DB, then port-scanning them through the validated pool.

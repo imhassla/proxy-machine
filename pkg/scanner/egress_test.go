@@ -125,6 +125,34 @@ func TestScreenGrantAll(t *testing.T) {
 	}
 }
 
+func TestSequentialCandidates(t *testing.T) {
+	got := sequentialCandidates([]string{"1.2.3.10:8080"}, 2)
+	want := []string{"1.2.3.8:8080", "1.2.3.9:8080", "1.2.3.11:8080", "1.2.3.12:8080"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("seq = %v, want %v", got, want)
+	}
+	// Upper-octet boundary: .256 is skipped.
+	got2 := sequentialCandidates([]string{"1.2.3.254:80"}, 2)
+	want2 := []string{"1.2.3.252:80", "1.2.3.253:80", "1.2.3.255:80"}
+	if !reflect.DeepEqual(got2, want2) {
+		t.Fatalf("seq boundary = %v, want %v", got2, want2)
+	}
+}
+
+func TestPortWindowCandidates(t *testing.T) {
+	got := portWindowCandidates([]string{"9.9.9.9:1081"}, 2)
+	want := []string{"9.9.9.9:1079", "9.9.9.9:1080", "9.9.9.9:1082", "9.9.9.9:1083"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("port-window = %v, want %v", got, want)
+	}
+	// Upper port boundary: 65536 is skipped.
+	got2 := portWindowCandidates([]string{"9.9.9.9:65534"}, 2)
+	want2 := []string{"9.9.9.9:65532", "9.9.9.9:65533", "9.9.9.9:65535"}
+	if !reflect.DeepEqual(got2, want2) {
+		t.Fatalf("port-window boundary = %v, want %v", got2, want2)
+	}
+}
+
 func TestDeriveNeighborhoods(t *testing.T) {
 	known := []string{
 		// 9.9.9.0/24 is a dense block: 3 distinct proxies, ports 8080 (x2) and 3128 (x1).

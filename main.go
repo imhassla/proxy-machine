@@ -322,22 +322,13 @@ func runValidate(args []string) error {
 	return nil
 }
 
-// runDiscoverPass runs one neighbor-discovery pass with STREAMING validation: the scanner
-// emits each open neighbor ip:port as it's found, and the checker validates it as every proxy
-// type and stores survivors immediately — so discovered proxies land in the DB continuously,
-// with no wait for a checker cycle or a batch flush. Shared by the --discover background job
-// and the `discover` subcommand.
+// runDiscoverPass runs one discovery pass with STREAMING validation. It feeds candidates into
+// the checker, which validates each as every proxy type and stores survivors immediately (no
+// cycle wait). Candidates come from the high-yield VALIDATE-ONLY strategies — sequential-IP,
+// port-window, and common-port expansion of a sampled slice of the known pool — plus, only when
+// --discoverScan is set, the expensive (low-yield) /24 neighbor port-scan. Shared by the
+// --discover background job and the `discover` subcommand.
 func runDiscoverPass(ctx context.Context, manager *checker.CheckManager, sc *scanner.Scanner, cfg *config.Config) error {
-	opts := scanner.DiscoverOptions{
-		MinDensity:  cfg.DiscoverMinDensity,
-		MinPortHits: 3,
-		MaxPorts:    12,
-		Workers:     cfg.Workers,
-		Timeout:     cfg.ConnectTimeout,
-	}
-
-	// The checker consumes open ip:ports off this channel, validating+storing continuously
-	// while the scan is still running.
 	openCh := make(chan string, 256)
 	var stored int
 	var verr error
@@ -346,22 +337,42 @@ func runDiscoverPass(ctx context.Context, manager *checker.CheckManager, sc *sca
 		defer close(done)
 		stored, verr = manager.ValidateAndStoreStream(ctx, openCh)
 	}()
-
-	found, serr := sc.DiscoverNeighborsStream(ctx, opts, func(ipPort string) {
+	feed := func(ipPort string) {
 		select {
 		case openCh <- ipPort:
 		case <-ctx.Done():
 		}
-	})
+	}
+
+	// Validate-only expansion — cheap and high-yield (no port scan).
+	cands, cerr := sc.ExpansionCandidates(cfg.DiscoverExpandSample, cfg.DiscoverSeqSpan, cfg.DiscoverPortWindow)
+	if cerr == nil {
+		log.Printf("discover: %d expansion candidates (sample=%d hosts, seq±%d, port±%d)",
+			len(cands), cfg.DiscoverExpandSample, cfg.DiscoverSeqSpan, cfg.DiscoverPortWindow)
+		for _, c := range cands {
+			feed(c)
+		}
+	}
+
+	// Optional /24 neighbor port-scan through the pool (expensive, low yield).
+	var found int
+	var serr error
+	if cfg.DiscoverScan {
+		found, serr = sc.DiscoverNeighborsStream(ctx, scanner.DiscoverOptions{
+			MinDensity: cfg.DiscoverMinDensity, MinPortHits: 3, MaxPorts: 12,
+			Workers: cfg.Workers, Timeout: cfg.ConnectTimeout,
+		}, feed)
+	}
+
 	close(openCh)
 	<-done
 
-	if serr != nil {
-		return serr
-	}
 	if verr != nil {
 		return verr
 	}
-	log.Printf("discover: pass done — %d open neighbors found, %d validated proxies stored", found, stored)
+	if serr != nil {
+		return serr
+	}
+	log.Printf("discover: pass done — %d expansion + %d scanned candidates → %d validated proxies stored", len(cands), found, stored)
 	return nil
 }
