@@ -509,13 +509,13 @@ func (cm *CheckManager) validateStreamChan(ctx context.Context, sip string, work
 // honeypot) but skips the cycle's recheck/prune bookkeeping, so it's a pure additive
 // discovery path: found → validated (all types) → stored, with no wait for the next cycle.
 // Returns the number of (proxy,type) rows stored. Safe to run alongside the background loop.
-func (cm *CheckManager) ValidateAndStoreStream(ctx context.Context, ipPorts <-chan string) (int, error) {
+func (cm *CheckManager) ValidateAndStoreStream(ctx context.Context, ipPorts <-chan string) (int, []string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	sip, err := cm.fetchPublicIP(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("self-IP fetch failed: %w", err)
+		return 0, nil, fmt.Errorf("self-IP fetch failed: %w", err)
 	}
 
 	// Fan each incoming ip:port out into one job per testable type.
@@ -537,13 +537,15 @@ func (cm *CheckManager) ValidateAndStoreStream(ctx context.Context, ipPorts <-ch
 		}
 	}()
 
-	var processed, stored, fresh int
+	var processed, stored int
+	newSet := map[string]struct{}{} // distinct net-new proxy ADDRESSES (for adaptive expansion)
+	var netNew []string
 	lastLog := time.Now()
 	for r := range cm.validateStreamChan(ctx, sip, 0, in) {
 		processed++
 		// Periodic progress so a long streaming pass isn't a silent black box.
 		if time.Since(lastLog) >= 30*time.Second {
-			log.Printf("discover: validated %d candidates, stored %d (%d net-new) so far", processed, stored, fresh)
+			log.Printf("discover: validated %d candidates, stored %d (%d net-new) so far", processed, stored, len(netNew))
 			lastLog = time.Now()
 		}
 		if !r.ok || cm.db == nil {
@@ -559,16 +561,19 @@ func (cm *CheckManager) ValidateAndStoreStream(ctx context.Context, ipPorts <-ch
 		}
 		stored++
 		if !exists { // wasn't in the pool before → net-new proxy from discovery
-			fresh++
 			_ = cm.db.RecordDiscovered(r.job.typ, r.job.addr, now)
+			if _, seen := newSet[r.job.addr]; !seen {
+				newSet[r.job.addr] = struct{}{}
+				netNew = append(netNew, r.job.addr)
+			}
 		}
 		if stored%25 == 0 {
 			cm.refreshCacheFromDB() // push fresh survivors to the relay mid-stream
 		}
 	}
 	cm.refreshCacheFromDB()
-	log.Printf("discover: validated %d candidates, stored %d proxies (%d net-new)", processed, stored, fresh)
-	return stored, nil
+	log.Printf("discover: validated %d candidates, stored %d proxies (%d net-new)", processed, stored, len(netNew))
+	return stored, netNew, nil
 }
 
 // setHeaders applies the browser-like User-Agent (+ a permissive Accept) that gets requests

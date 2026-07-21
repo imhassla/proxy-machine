@@ -95,6 +95,11 @@ type Config struct {
 	DiscoverPortWindow   int
 	DiscoverScan         bool
 
+	// DiscoverAdaptiveRounds: after the initial expansion, run up to this many follow-up rounds
+	// that WIDEN the search around each freshly-found proxy (whole port/IP block), stopping early
+	// when a round finds nothing new. 0 disables adaptive expansion.
+	DiscoverAdaptiveRounds int
+
 	// ProxyUser / ProxyPass, when ProxyUser is non-empty, require HTTP Basic
 	// Proxy-Authorization on every relay request. Empty → no auth (safe only with the
 	// loopback default bind; a non-loopback RelayAddr should always set credentials).
@@ -106,30 +111,31 @@ type Config struct {
 // args should typically be os.Args[1:].
 func Load(args []string) (*Config, error) {
 	cfg := &Config{
-		Workers:              50,
-		Timeout:              30 * time.Second,
-		ConnectTimeout:       5 * time.Second,
-		DBPath:               "data.db",
-		CheckInterval:        60 * time.Second,
-		RelayAddr:            "127.0.0.1:3333",
-		APIAddr:              "127.0.0.1:8000",
-		SocksAddr:            "127.0.0.1:1080",
-		MaxFailover:          5,
-		ChainLength:          1,
-		StickyTTL:            10 * time.Minute,
-		MaxProxyAge:          24 * time.Hour,
-		MaxRecheckInterval:   15 * time.Minute,
-		HoneypotCheck:        true,
-		GeoLookup:            true,
-		DiscoverInterval:     30 * time.Minute,
-		DiscoverMinDensity:   3,
-		DiscoverExpandSample: 400,
-		DiscoverSeqSpan:      4,
-		DiscoverPortWindow:   6,
+		Workers:                50,
+		Timeout:                30 * time.Second,
+		ConnectTimeout:         5 * time.Second,
+		DBPath:                 "data.db",
+		CheckInterval:          60 * time.Second,
+		RelayAddr:              "127.0.0.1:3333",
+		APIAddr:                "127.0.0.1:8000",
+		SocksAddr:              "127.0.0.1:1080",
+		MaxFailover:            5,
+		ChainLength:            1,
+		StickyTTL:              10 * time.Minute,
+		MaxProxyAge:            24 * time.Hour,
+		MaxRecheckInterval:     15 * time.Minute,
+		HoneypotCheck:          true,
+		GeoLookup:              true,
+		DiscoverInterval:       30 * time.Minute,
+		DiscoverMinDensity:     3,
+		DiscoverExpandSample:   400,
+		DiscoverSeqSpan:        4,
+		DiscoverPortWindow:     6,
+		DiscoverAdaptiveRounds: 2,
 	}
 
 	var configPath string
-	var workers, maxFailover, chainLength, discoverMinDensity, discoverExpandSample, discoverSeqSpan, discoverPortWindow int
+	var workers, maxFailover, chainLength, discoverMinDensity, discoverExpandSample, discoverSeqSpan, discoverPortWindow, discoverAdaptiveRounds int
 	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge, maxRecheckInterval, discoverInterval time.Duration
 	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg, geoArg, discoverArg, discoverScanArg string
 
@@ -158,6 +164,7 @@ func Load(args []string) (*Config, error) {
 	fs.IntVar(&discoverExpandSample, "discoverExpandSample", -1, "Known proxies sampled per pass for validate-only expansion (default 400)")
 	fs.IntVar(&discoverSeqSpan, "discoverSeqSpan", -1, "Sequential-IP span: test ip ± N on the same port (default 4)")
 	fs.IntVar(&discoverPortWindow, "discoverPortWindow", -1, "Port-window: test port ± N on the same host (default 6)")
+	fs.IntVar(&discoverAdaptiveRounds, "discoverAdaptiveRounds", -1, "Follow-up rounds that widen around each found proxy to grab whole blocks (default 2; 0 off)")
 	fs.StringVar(&discoverScanArg, "discoverScan", "", "Also run the expensive /24 neighbor port-scan (low yield): true|false (default false)")
 	fs.StringVar(&proxyUser, "proxyUser", "", "Relay/SOCKS auth username (enables auth when set)")
 	fs.StringVar(&proxyPass, "proxyPass", "", "Relay/SOCKS auth password")
@@ -244,6 +251,9 @@ func Load(args []string) (*Config, error) {
 	}
 	if discoverPortWindow >= 0 {
 		cfg.DiscoverPortWindow = discoverPortWindow
+	}
+	if discoverAdaptiveRounds >= 0 {
+		cfg.DiscoverAdaptiveRounds = discoverAdaptiveRounds
 	}
 	if discoverScanArg != "" {
 		cfg.DiscoverScan = discoverScanArg == "true" || discoverScanArg == "1" || discoverScanArg == "yes"

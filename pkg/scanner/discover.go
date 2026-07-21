@@ -82,6 +82,16 @@ func portWindowCandidates(pairs []string, window int) []string {
 	return out
 }
 
+// AdaptiveCandidates returns a WIDE expansion around a single freshly-confirmed proxy — many
+// neighboring ports on the same host plus the same port on many neighboring IPs — so once one
+// member of a proxy block is found, discovery grabs the rest of the block (contiguous port
+// ranges / IP ranges the provider allocated). Used by the adaptive rounds after each pass.
+func AdaptiveCandidates(ipPort string, portWindow, seqSpan int) []string {
+	one := []string{ipPort}
+	out := portWindowCandidates(one, portWindow)
+	return append(out, sequentialCandidates(one, seqSpan)...)
+}
+
 // ExpansionCandidates builds validate-only discovery candidates from a (shuffled) sample of the
 // known pool: sequential-IP neighbors + common-port expansion, deduped. These need no port
 // scan — the caller validates each directly — and in testing yielded net-new proxies at

@@ -314,7 +314,7 @@ func runValidate(args []string) error {
 		}
 	}()
 
-	stored, err := checker.New(cfg, database).ValidateAndStoreStream(context.Background(), ch)
+	stored, _, err := checker.New(cfg, database).ValidateAndStoreStream(context.Background(), ch)
 	if err != nil {
 		return err
 	}
@@ -329,50 +329,84 @@ func runValidate(args []string) error {
 // --discoverScan is set, the expensive (low-yield) /24 neighbor port-scan. Shared by the
 // --discover background job and the `discover` subcommand.
 func runDiscoverPass(ctx context.Context, manager *checker.CheckManager, sc *scanner.Scanner, cfg *config.Config) error {
-	openCh := make(chan string, 256)
-	var stored int
-	var verr error
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		stored, verr = manager.ValidateAndStoreStream(ctx, openCh)
-	}()
-	feed := func(ipPort string) {
-		select {
-		case openCh <- ipPort:
-		case <-ctx.Done():
-		}
+	// validate streams a candidate slice through the checker and returns (stored, net-new addrs).
+	validate := func(cands []string) (int, []string, error) {
+		ch := make(chan string, 256)
+		go func() {
+			defer close(ch)
+			for _, c := range cands {
+				select {
+				case ch <- c:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		return manager.ValidateAndStoreStream(ctx, ch)
 	}
 
-	// Validate-only expansion — cheap and high-yield (no port scan).
+	// Round 0: validate-only expansion of a sampled slice of the pool (cheap, high-yield).
 	cands, cerr := sc.ExpansionCandidates(cfg.DiscoverExpandSample, cfg.DiscoverSeqSpan, cfg.DiscoverPortWindow)
-	if cerr == nil {
-		log.Printf("discover: %d expansion candidates (sample=%d hosts, seq±%d, port±%d)",
-			len(cands), cfg.DiscoverExpandSample, cfg.DiscoverSeqSpan, cfg.DiscoverPortWindow)
-		for _, c := range cands {
-			feed(c)
+	if cerr != nil {
+		return cerr
+	}
+	tried := make(map[string]struct{}, len(cands))
+	for _, c := range cands {
+		tried[c] = struct{}{}
+	}
+	log.Printf("discover: %d expansion candidates (sample=%d hosts, seq±%d, port±%d)",
+		len(cands), cfg.DiscoverExpandSample, cfg.DiscoverSeqSpan, cfg.DiscoverPortWindow)
+	totalStored, hits, err := validate(cands)
+	if err != nil {
+		return err
+	}
+
+	// Adaptive rounds: widen aggressively around each freshly-found proxy to grab the rest of
+	// its block (contiguous ports / IPs), until a round finds nothing new.
+	const adaptivePortWindow, adaptiveSeqSpan = 30, 8
+	for round := 1; round <= cfg.DiscoverAdaptiveRounds && len(hits) > 0 && ctx.Err() == nil; round++ {
+		var next []string
+		for _, hp := range hits {
+			for _, c := range scanner.AdaptiveCandidates(hp, adaptivePortWindow, adaptiveSeqSpan) {
+				if _, ok := tried[c]; !ok {
+					tried[c] = struct{}{}
+					next = append(next, c)
+				}
+			}
 		}
+		if len(next) == 0 {
+			break
+		}
+		log.Printf("discover: adaptive round %d — widening around %d fresh hits → %d candidates", round, len(hits), len(next))
+		var s int
+		s, hits, err = validate(next)
+		if err != nil {
+			return err
+		}
+		totalStored += s
 	}
 
 	// Optional /24 neighbor port-scan through the pool (expensive, low yield).
-	var found int
-	var serr error
 	if cfg.DiscoverScan {
-		found, serr = sc.DiscoverNeighborsStream(ctx, scanner.DiscoverOptions{
+		openCh := make(chan string, 256)
+		var scanStored int
+		done := make(chan struct{})
+		go func() { defer close(done); scanStored, _, _ = manager.ValidateAndStoreStream(ctx, openCh) }()
+		found, _ := sc.DiscoverNeighborsStream(ctx, scanner.DiscoverOptions{
 			MinDensity: cfg.DiscoverMinDensity, MinPortHits: 3, MaxPorts: 12,
 			Workers: cfg.Workers, Timeout: cfg.ConnectTimeout,
-		}, feed)
+		}, func(ipPort string) {
+			select {
+			case openCh <- ipPort:
+			case <-ctx.Done():
+			}
+		})
+		close(openCh)
+		<-done
+		totalStored += scanStored
+		log.Printf("discover: /24 scan found %d open, stored %d", found, scanStored)
 	}
 
-	close(openCh)
-	<-done
-
-	if verr != nil {
-		return verr
-	}
-	if serr != nil {
-		return serr
-	}
-	log.Printf("discover: pass done — %d expansion + %d scanned candidates → %d validated proxies stored", len(cands), found, stored)
+	log.Printf("discover: pass done — %d proxies stored", totalStored)
 	return nil
 }

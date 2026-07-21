@@ -157,7 +157,7 @@ func TestCheckManager_ValidateAndStoreStream(t *testing.T) {
 	openCh <- "127.0.0.1:1" // refuses connections → validated as nothing, stored nothing
 	close(openCh)
 
-	stored, err := cm.ValidateAndStoreStream(context.Background(), openCh)
+	stored, _, err := cm.ValidateAndStoreStream(context.Background(), openCh)
 	if err != nil {
 		t.Fatalf("ValidateAndStoreStream: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestValidateAndStoreStream_Attribution(t *testing.T) {
 		ch := make(chan string, 1)
 		ch <- fx.proxyAddr
 		close(ch)
-		if _, err := cm.ValidateAndStoreStream(context.Background(), ch); err != nil {
+		if _, _, err := cm.ValidateAndStoreStream(context.Background(), ch); err != nil {
 			t.Fatal(err)
 		}
 	}
