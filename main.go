@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +33,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "discover" {
 		if err := runDiscover(os.Args[2:]); err != nil {
 			log.Fatalf("discover: %v", err)
+		}
+		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "validate" {
+		if err := runValidate(os.Args[2:]); err != nil {
+			log.Fatalf("validate: %v", err)
 		}
 		return
 	}
@@ -70,6 +79,7 @@ func runService(args []string) error {
 	// Expose the relay's live upstream health via GET /upstreams.
 	server.SetUpstreamsProvider(func() any { return relayServer.Upstreams() })
 	server.SetRelayAddr(cfg.RelayAddr) // advertised first in /proxy.pac
+	server.SetDiscoverEnabled(cfg.Discover)
 
 	// Geo/ASN enrichment runs as its OWN background process (online lookup), independent of
 	// the checker so validation never waits on it. Errors are logged internally. The enricher
@@ -269,6 +279,46 @@ func runDiscover(args []string) error {
 	if err := runDiscoverPass(context.Background(), manager, scanner.New(database), cfg); err != nil {
 		return err
 	}
+	return nil
+}
+
+// runValidate reads "ip:port" candidates from stdin (one per line), validates each as every
+// proxy type, stores survivors, and attributes net-new ones — reusing the discovery streaming
+// path. A general instrument for measuring the yield of ANY candidate-generation strategy:
+// generate a list, pipe it in, read the "stored Y (Z net-new)" summary. Flags: --dbPath.
+func runValidate(args []string) error {
+	cfg, err := config.Load(args)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	database, err := db.Open(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	if err := database.Init(); err != nil {
+		_ = database.Close()
+		return fmt.Errorf("init database: %w", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	ch := make(chan string, 256)
+	go func() {
+		defer close(ch)
+		sc := bufio.NewScanner(os.Stdin)
+		sc.Buffer(make([]byte, 64*1024), 1<<20)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line != "" {
+				ch <- line
+			}
+		}
+	}()
+
+	stored, err := checker.New(cfg, database).ValidateAndStoreStream(context.Background(), ch)
+	if err != nil {
+		return err
+	}
+	log.Printf("validate: done — %d proxies stored (see the net-new count in the summary above)", stored)
 	return nil
 }
 

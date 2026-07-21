@@ -30,6 +30,7 @@ type Server struct {
 	metrics     *metrics.Metrics
 	upstreamsFn func() any // set via SetUpstreamsProvider; supplies /upstreams data
 	relayAddr   string     // advertised in /proxy.pac (set via SetRelayAddr)
+	discoverOn  bool       // whether the neighbor-discovery job is enabled (set via SetDiscoverEnabled)
 	sessions    *sessionStore
 	srv         *http.Server
 }
@@ -40,6 +41,10 @@ func (s *Server) SetUpstreamsProvider(fn func() any) { s.upstreamsFn = fn }
 
 // SetRelayAddr sets the relay address advertised first in /proxy.pac (empty = omit).
 func (s *Server) SetRelayAddr(addr string) { s.relayAddr = addr }
+
+// SetDiscoverEnabled tells the API whether the neighbor-discovery job is running, so the
+// dashboard shows its attribution line only when the feature is on.
+func (s *Server) SetDiscoverEnabled(on bool) { s.discoverOn = on }
 
 // New creates a new Server on the given address. The *http.Server is built here (not in
 // Start), so Stop always has a non-nil server even if a shutdown signal arrives during
@@ -189,11 +194,13 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	out := struct {
 		Proxies    map[string]int   `json:"proxies"`
-		Discovered int              `json:"discovered"` // unique proxies attributed to neighbor discovery
+		Discovered int              `json:"discovered"`  // unique proxies attributed to neighbor discovery
+		DiscoverOn bool             `json:"discover_on"` // whether the discovery job is enabled
 		Relay      metrics.Snapshot `json:"relay"`
 	}{
 		Proxies:    s.proxyCounts(),
 		Discovered: discovered,
+		DiscoverOn: s.discoverOn,
 		Relay:      s.metrics.Snapshot(),
 	}
 	w.Header().Set("Content-Type", "application/json")
