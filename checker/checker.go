@@ -350,6 +350,14 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 			log.Printf("checker: pruned %d orphaned geo rows", n)
 		}
 	}
+	// Keep the discovery-attribution count in sync with the live pool: drop rows for proxies
+	// that have since been pruned as dead, so "via discover" reflects the currently-live
+	// contribution (≤ total) rather than a lifetime tally that only ever grows.
+	if cm.db != nil {
+		if _, err := cm.db.PruneDiscoveredOrphans(); err != nil {
+			log.Printf("checker: discovered prune failed: %v", err)
+		}
+	}
 
 	cm.refreshCacheFromDB()
 	// Fold geo enrichment progress into this one line (the enricher stays silent): show how

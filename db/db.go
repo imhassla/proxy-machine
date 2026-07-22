@@ -166,7 +166,9 @@ func (d *DB) RecordDiscovered(proxyType, proxy, firstSeen string) error {
 	return nil
 }
 
-// CountDiscovered returns the number of unique proxies attributed to neighbor discovery.
+// CountDiscovered returns the number of discovery-attributed proxies that are STILL LIVE (their
+// (typ, proxy) is present in the per-type table). Kept in sync by PruneDiscoveredOrphans, so this
+// is comparable to the live pool total rather than a lifetime-cumulative figure.
 func (d *DB) CountDiscovered() (int, error) {
 	if err := d.EnsureDiscoveredTable(); err != nil {
 		return 0, err
@@ -176,6 +178,32 @@ func (d *DB) CountDiscovered() (int, error) {
 		return 0, fmt.Errorf("count discovered: %w", err)
 	}
 	return n, nil
+}
+
+// PruneDiscoveredOrphans drops discovery-attribution rows for proxies that have since left the
+// pool (pruned as dead), so the "via discover" count reflects discovery's CURRENTLY-LIVE
+// contribution (≤ the live total) instead of a lifetime-cumulative tally that keeps growing.
+// Returns how many were removed.
+func (d *DB) PruneDiscoveredOrphans() (int, error) {
+	if err := d.EnsureDiscoveredTable(); err != nil {
+		return 0, err
+	}
+	var total int64
+	for typ := range allowedTypes {
+		res, err := d.conn.Exec(
+			fmt.Sprintf("DELETE FROM _discovered WHERE typ = ? AND proxy NOT IN (SELECT proxy FROM %s)", typ), typ)
+		if err != nil {
+			return int(total), fmt.Errorf("prune discovered %s: %w", typ, err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+	// Also drop any rows whose type isn't a known table (defensive).
+	if _, err := d.conn.Exec(
+		"DELETE FROM _discovered WHERE typ NOT IN ('http','https','socks4','socks5')"); err != nil {
+		return int(total), fmt.Errorf("prune discovered unknown-type: %w", err)
+	}
+	return int(total), nil
 }
 
 // GetProxiesByType returns the proxy addresses stored for the given proxy type.

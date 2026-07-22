@@ -216,6 +216,29 @@ func TestHealthPersistence(t *testing.T) {
 	}
 }
 
+func TestPruneDiscoveredOrphans(t *testing.T) {
+	d := setupDB(t)
+	if err := d.StoreProxy("http", "1.1.1.1:8080", 0.1, "2030-01-01 00:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	// One live attribution (proxy present as http), two orphans: a proxy in no table, and the
+	// live proxy attributed under the WRONG type (it's http, not socks5).
+	_ = d.RecordDiscovered("http", "1.1.1.1:8080", "t")   // keep
+	_ = d.RecordDiscovered("http", "9.9.9.9:8080", "t")   // orphan (not stored)
+	_ = d.RecordDiscovered("socks5", "1.1.1.1:8080", "t") // orphan (not in socks5 table)
+
+	n, err := d.PruneDiscoveredOrphans()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("pruned %d, want 2 (the two orphans)", n)
+	}
+	if c, _ := d.CountDiscovered(); c != 1 {
+		t.Fatalf("CountDiscovered = %d, want 1 (only the live http attribution)", c)
+	}
+}
+
 func TestPruneGeoOrphans(t *testing.T) {
 	d := setupDB(t)
 	// One live proxy (whose host has geo) and one orphan geo row (no backing proxy), plus an
