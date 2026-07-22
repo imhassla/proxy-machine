@@ -166,18 +166,26 @@ func (d *DB) RecordDiscovered(proxyType, proxy, firstSeen string) error {
 	return nil
 }
 
-// CountDiscovered returns the number of discovery-attributed proxies that are STILL LIVE (their
-// (typ, proxy) is present in the per-type table). Kept in sync by PruneDiscoveredOrphans, so this
-// is comparable to the live pool total rather than a lifetime-cumulative figure.
+// CountDiscovered returns the number of discovery-attributed proxies that are STILL LIVE — the
+// attribution rows whose (typ, proxy) is still present in the per-type table. Computed at query
+// time (a PK-indexed EXISTS per type) so it is always accurate immediately, independent of when
+// PruneDiscoveredOrphans last ran. Comparable to the live pool total, not a lifetime tally.
 func (d *DB) CountDiscovered() (int, error) {
 	if err := d.EnsureDiscoveredTable(); err != nil {
 		return 0, err
 	}
-	var n int
-	if err := d.conn.QueryRow("SELECT COUNT(*) FROM _discovered").Scan(&n); err != nil {
-		return 0, fmt.Errorf("count discovered: %w", err)
+	total := 0
+	for typ := range allowedTypes {
+		var n int
+		if err := d.conn.QueryRow(
+			fmt.Sprintf("SELECT COUNT(*) FROM _discovered d WHERE d.typ = ? AND EXISTS (SELECT 1 FROM %s p WHERE p.proxy = d.proxy)", typ),
+			typ,
+		).Scan(&n); err != nil {
+			return 0, fmt.Errorf("count discovered %s: %w", typ, err)
+		}
+		total += n
 	}
-	return n, nil
+	return total, nil
 }
 
 // PruneDiscoveredOrphans drops discovery-attribution rows for proxies that have since left the
