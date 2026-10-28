@@ -20,6 +20,7 @@ import (
 
 	"proxymachine/config"
 	"proxymachine/db"
+	"proxymachine/pkg/checkservice"
 	"proxymachine/pkg/socks"
 )
 
@@ -130,10 +131,11 @@ type proxyJob struct {
 }
 
 type checkResult struct {
-	job  proxyJob
-	rt   float64
-	anon string
-	ok   bool
+	suspended bool
+	job       proxyJob
+	rt        float64
+	anon      string
+	ok        bool
 }
 
 // pruneThreshold is how many CONSECUTIVE failed rechecks a stored proxy must accumulate
@@ -143,6 +145,7 @@ const pruneThreshold = 3
 
 // CheckManager orchestrates proxy harvesting, validation, persistence and serving.
 type CheckManager struct {
+	owned         *checkservice.Client // Configured before starting workers; shared with rechecks.
 	cfg           *config.Config
 	db            *db.DB
 	cache         map[string][]string
@@ -243,6 +246,13 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 	// and a later cycle recovers — fixing the permanent-degrade-on-startup failure mode.
 	sip, err := cm.fetchPublicIP(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		if cm.owned != nil {
+			log.Printf("checker: owned check service unavailable (%v) — SKIPPING cycle; no public fallback or proxy failure updates", err)
+			return
+		}
 		// This is the silent-stall failure mode: without a self-IP NOTHING gets validated,
 		// so make it loud — the operator needs to know the pipeline is blocked on network.
 		log.Printf("checker: self-IP fetch FAILED from all %d endpoints (%v) — SKIPPING cycle; no proxies will be validated until this recovers (check network egress)", len(cm.IPURLs), err)
@@ -268,12 +278,18 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 
 	stored := map[string]int{}
 	var okCount, prunedCount, processed int
+	cycleSuspended := false
 	var prune = map[string][]string{}
 	// Persist each survivor AS IT PASSES (not at end of cycle), so the API/relay see fresh
 	// proxies within seconds of startup instead of after the whole multi-minute sweep.
 	for r := range cm.validateStream(ctx, sip, jobs) {
 		processed++
 		key := r.job.typ + "|" + r.job.addr
+		// An endpoint outage is not an upstream failure.
+		if r.suspended {
+			cycleSuspended = true
+			continue
+		}
 		if r.ok {
 			okCount++
 			stored[r.job.typ]++
@@ -339,11 +355,13 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 	}
 	// The scanner's candidates have now been classified/validated, so consume them
 	// (mirrors checker.py -scan clearing _scan_results) regardless of outcome.
-	cm.deleteScanResults(scanIPs)
+	if !cycleSuspended && (cm.owned == nil || ctx.Err() == nil) {
+		cm.deleteScanResults(scanIPs)
+	}
 
 	// Retention: drop proxies not successfully re-validated within MaxProxyAge, bounding
 	// table growth (and next cycle's recheck job count) over long uptime.
-	if cm.db != nil && cm.cfg.MaxProxyAge > 0 {
+	if cm.db != nil && cm.cfg.MaxProxyAge > 0 && !cycleSuspended && (cm.owned == nil || ctx.Err() == nil) {
 		cutoff := time.Now().UTC().Add(-cm.cfg.MaxProxyAge).Format("2006-01-02 15:04:05")
 		if n, err := cm.db.PruneStale(cutoff); err != nil {
 			log.Printf("checker: retention prune failed: %v", err)
@@ -578,11 +596,15 @@ func (cm *CheckManager) validateStreamChan(ctx context.Context, sip string, work
 					cm.scheduling.lastRecheckLag.Store(int64(lag))
 				}
 				rt, anon, ok := cm.check(ctx, sip, job)
+				suspended := false
+				if !ok && cm.owned != nil {
+					suspended = ctx.Err() != nil || !cm.owned.Healthy(ctx)
+				}
 				if release != nil {
 					release()
 				}
 				select {
-				case out <- checkResult{job: job, rt: rt, anon: anon, ok: ok}:
+				case out <- checkResult{job: job, rt: rt, anon: anon, ok: ok, suspended: suspended}:
 				case <-ctx.Done():
 					return
 				}
@@ -757,6 +779,17 @@ func (cm *CheckManager) check(ctx context.Context, sip string, job proxyJob) (fl
 	if sip == "" {
 		return 0, "", false
 	}
+	if cm.owned != nil {
+		start := time.Now()
+		o, err := cm.owned.Probe(ctx, job.typ+"://"+job.addr, cm.cfg.ConnectTimeout, cm.cfg.CheckServiceDeep)
+		if err != nil {
+			return 0, "", false
+		}
+		_, leaked := classifyAnon(sip, ipResult{origin: o.Origin, headers: o.Headers, hasHeaders: true})
+		// An encrypted visitor path cannot reveal a forwarding proxy's plaintext
+		// header behavior. Do not label it elite based on xrok-added headers.
+		return time.Since(start).Seconds(), "", !leaked
+	}
 	timeout := cm.cfg.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -890,6 +923,10 @@ func round2(f float64) float64 { return float64(int64(f*100+0.5)) / 100 }
 // fetchPublicIP returns our own public IP, trying each configured endpoint in order until
 // one succeeds (so a single provider outage/503 doesn't stall the whole pipeline).
 func (cm *CheckManager) fetchPublicIP(ctx context.Context) (string, error) {
+	if cm.owned != nil {
+		o, err := cm.owned.Probe(ctx, "", 0, false)
+		return o.Origin, err
+	}
 	var lastErr error
 	for _, u := range cm.IPURLs {
 		ip, err := cm.fetchSelfIP(ctx, u)

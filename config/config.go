@@ -18,9 +18,15 @@ import (
 
 // Config holds the application settings.
 type Config struct {
-	MaxCandidates int // Maximum new candidates admitted per harvest cycle; zero disables the cap.
-	Workers       int
-	Timeout       time.Duration
+	CheckViaXrok     bool   // Start an owned check service through the installed xrok client.
+	CheckServiceURL  string // Signed descriptor of an already running owned service.
+	CheckServiceCA   string // Optional CA bundle for the owned HTTPS endpoint.
+	CheckServiceDeep bool   // Also require POST integrity and WebSocket checks.
+	XrokBinary       string
+	XrokConfig       string
+	MaxCandidates    int // Maximum new candidates admitted per harvest cycle; zero disables the cap.
+	Workers          int
+	Timeout          time.Duration
 	// ConnectTimeout bounds just the TCP connect (+ SOCKS handshake) to a candidate proxy,
 	// separately from Timeout (the whole per-proxy validation). A short connect timeout lets
 	// dead proxies fail fast so a sweep converges, while a slow-but-alive proxy still gets
@@ -120,6 +126,7 @@ type Config struct {
 // args should typically be os.Args[1:].
 func Load(args []string) (*Config, error) {
 	cfg := &Config{
+		XrokBinary:             "xrok",
 		Workers:                50,
 		MaxCandidates:          10000,
 		Timeout:                30 * time.Second,
@@ -156,6 +163,14 @@ func Load(args []string) (*Config, error) {
 	var dbPath, relayAddr, apiAddr, socksAddr, proxyUser, proxyPass, stickyHeader, sourcesArg, honeypotArg, geoArg, discoverArg, discoverScanArg, discoverGapFillArg string
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	var ownedXrok, ownedDeep bool
+	var ownedURL, ownedCA, xrokBin, xrokConfig string
+	fs.BoolVar(&ownedXrok, "checkViaXrok", false, "Check through an owned service started with the installed configured xrok")
+	fs.BoolVar(&ownedDeep, "checkServiceDeep", false, "Require owned-service POST integrity and WebSocket in addition to GET")
+	fs.StringVar(&ownedURL, "checkServiceURL", "", "Owned check-service descriptor (HTTPS URL with signing-key fragment)")
+	fs.StringVar(&ownedCA, "checkServiceCA", "", "Optional CA bundle for the owned HTTPS endpoint")
+	fs.StringVar(&xrokBin, "xrokBinary", "xrok", "Installed xrok executable")
+	fs.StringVar(&xrokConfig, "xrokConfig", "", "Existing xrok profile (default XROK_CONFIG or ~/.xrok/config.yaml)")
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
 	fs.IntVar(&maxCandidates, "maxCandidates", -1, "Maximum new candidates per harvest cycle (default 10000; 0 unlimited)")
 	fs.IntVar(&workers, "workers", -1, "Number of workers")
@@ -198,6 +213,28 @@ func Load(args []string) (*Config, error) {
 		if err := loadFile(configPath, cfg); err != nil {
 			return nil, err
 		}
+	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "checkViaXrok":
+			cfg.CheckViaXrok = ownedXrok
+		case "checkServiceDeep":
+			cfg.CheckServiceDeep = ownedDeep
+		case "checkServiceURL":
+			cfg.CheckServiceURL = ownedURL
+		case "checkServiceCA":
+			cfg.CheckServiceCA = ownedCA
+		case "xrokBinary":
+			cfg.XrokBinary = xrokBin
+		case "xrokConfig":
+			cfg.XrokConfig = xrokConfig
+		}
+	})
+	if cfg.CheckViaXrok && cfg.CheckServiceURL != "" {
+		return nil, fmt.Errorf("checkViaXrok and checkServiceURL are mutually exclusive")
+	}
+	if cfg.CheckServiceDeep && !cfg.CheckViaXrok && cfg.CheckServiceURL == "" {
+		return nil, fmt.Errorf("checkServiceDeep requires checkViaXrok or checkServiceURL")
 	}
 
 	if maxCandidates >= 0 {
@@ -334,6 +371,12 @@ func loadFile(path string, cfg *Config) error {
 }
 
 type fileConfig struct {
+	CheckViaXrok       *bool     `json:"checkViaXrok"`
+	CheckServiceURL    *string   `json:"checkServiceURL"`
+	CheckServiceCA     *string   `json:"checkServiceCA"`
+	CheckServiceDeep   *bool     `json:"checkServiceDeep"`
+	XrokBinary         *string   `json:"xrokBinary"`
+	XrokConfig         *string   `json:"xrokConfig"`
 	MaxCandidates      *int      `json:"maxCandidates"`
 	Workers            *int      `json:"workers"`
 	Timeout            *string   `json:"timeout"`
@@ -405,6 +448,24 @@ func loadINI(data []byte, cfg *Config) error {
 		}
 
 		switch key {
+		case "checkviaxrok", "checkservicedeep":
+			b, err := strconv.ParseBool(val)
+			if err != nil {
+				return fmt.Errorf("invalid %s: %w", key, err)
+			}
+			if key == "checkviaxrok" {
+				fc.CheckViaXrok = &b
+			} else {
+				fc.CheckServiceDeep = &b
+			}
+		case "checkserviceurl":
+			fc.CheckServiceURL = &val
+		case "checkserviceca":
+			fc.CheckServiceCA = &val
+		case "xrokbinary":
+			fc.XrokBinary = &val
+		case "xrokconfig":
+			fc.XrokConfig = &val
 		case "maxcandidates":
 			v, err := strconv.Atoi(val)
 			if err != nil {
@@ -516,6 +577,24 @@ func loadINI(data []byte, cfg *Config) error {
 }
 
 func applyFileConfig(fc fileConfig, cfg *Config) error {
+	if fc.CheckViaXrok != nil {
+		cfg.CheckViaXrok = *fc.CheckViaXrok
+	}
+	if fc.CheckServiceURL != nil {
+		cfg.CheckServiceURL = *fc.CheckServiceURL
+	}
+	if fc.CheckServiceCA != nil {
+		cfg.CheckServiceCA = *fc.CheckServiceCA
+	}
+	if fc.CheckServiceDeep != nil {
+		cfg.CheckServiceDeep = *fc.CheckServiceDeep
+	}
+	if fc.XrokBinary != nil {
+		cfg.XrokBinary = *fc.XrokBinary
+	}
+	if fc.XrokConfig != nil {
+		cfg.XrokConfig = *fc.XrokConfig
+	}
 	if fc.UDPMode != nil {
 		cfg.UDPMode = *fc.UDPMode
 	}

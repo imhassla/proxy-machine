@@ -8,6 +8,12 @@
   "maxProxyAge": "24h",
   "maxRecheckInterval": "15m",
   "honeypotCheck": true,
+  "checkViaXrok": false,
+  "checkServiceURL": "",
+  "checkServiceDeep": false,
+  "checkServiceCA": "",
+  "xrokBinary": "xrok",
+  "xrokConfig": "",
 
   "apiAddr": "127.0.0.1:8000",
   "relayAddr": "127.0.0.1:3333",

@@ -90,6 +90,7 @@ func (cm *CheckManager) startRechecks(ctx context.Context) <-chan struct{} {
 	cm.gate.reserve()
 	cm.skipRechecks = true
 	rechecks := New(cm.cfg, cm.db)
+	rechecks.owned = cm.owned
 	rechecks.IPURLs = cm.IPURLs
 	rechecks.TestURLs = cm.TestURLs
 	rechecks.skipHarvest = true

@@ -80,6 +80,84 @@ low-yield) /24 neighbor port-scan through the pool. Run one-shot (`discover`) or
 background job (`--discover`; `--discoverInterval 0` loops pass after pass). The `validate`
 subcommand (reads `ip:port` from stdin) is the instrument used to measure a strategy's yield.
 
+## Owned checks through an existing xrok setup
+
+The optional owned-check mode runs a small loopback HTTP service behind the installed
+`xrok` client. It discovers the public HTTPS URL from xrok's tunnel announcement,
+including its server-assigned domain and port. No xrok code, server configuration,
+DNS records, or public listeners need changing.
+
+On a machine where xrok is already installed and configured:
+
+```sh
+./proxymachine --dbPath owned-checks.db --checkViaXrok --geo=false
+
+# Also require a 64 KiB POST integrity check and a WebSocket exchange:
+./proxymachine --dbPath owned-checks.db --checkViaXrok --checkServiceDeep --geo=false
+```
+
+ProxyMachine resolves `xrok` on PATH and reads `$XROK_CONFIG`, otherwise
+`~/.xrok/config.yaml`. Override these with `--xrokBinary` and `--xrokConfig`.
+It creates a temporary, owner-only copy of the connection settings, excluding
+existing tunnel/UDP/SOCKS/reverse forwards, fixed client identity, P2P settings and
+log destinations. The source profile and other xrok processes are untouched.
+Startup waits up to 60 seconds for the announced route to pass a signed readiness
+check. The source profile must support a separate client and a named HTTPS tunnel.
+The helper follows xrok's existing `Tunnel NAME available at URL` CLI announcement;
+an incompatible CLI fails startup instead of guessing a URL.
+
+The check service can also run on a different machine. For example, leave the
+configured xrok client on a Mac and the proxy checker on Kali:
+
+```sh
+# Mac: keep this command running; stdout prints one descriptor.
+./proxymachine check-service
+
+# Kali: quote the complete descriptor, including its #public-key fragment.
+./proxymachine --dbPath owned-checks.db --checkServiceURL 'PASTE_DESCRIPTOR_HERE' --geo=false
+# The same flags work with `validate` and `discover`.
+```
+
+Use `--checkServiceCA path/to/ca.pem` for a private endpoint CA. Managed mode inherits
+the xrok profile's `ca_cert` unless overridden; a remote checker needs its own copy
+of the appropriate CA bundle. TLS verification is mandatory for both the endpoint
+and HTTPS-to-proxy hop. A self-signed public HTTPS proxy is therefore rejected unless
+its issuer is trusted. There is no insecure verification flag in this mode.
+
+Each request uses a fresh nonce. The service signs its observed origin, received
+payload digest and request metadata with Ed25519; the descriptor pins its public key.
+GET is always required; `--checkServiceDeep` additionally requires POST and WebSocket
+through the same proxy address. All operations share the configured `--timeout`;
+`--connectTimeout` bounds proxy establishment. HTTP CONNECT, TLS-to-proxy CONNECT,
+SOCKS4/4a and SOCKS5 are supported. Candidate traffic never falls back to a direct
+connection. Redirects, stale responses, incorrect signatures and body digests fail.
+
+Self-IP, candidate checks and integrity checks use only the owned service, with no
+public IP-echo or canary fallback, even if `honeypotCheck` is enabled. Public proxy-list
+harvesting and optional geo enrichment retain their existing behavior; `--geo=false`
+disables geo lookups. Direct signed endpoint health checks bypass environment proxy
+variables. Endpoint outages suspend validation and do not advance recheck failure
+streaks or refresh a proxy's validation timestamp. An interrupted owned-check cycle
+also retains scanner candidates and skips age-based retention. Managed mode exits if its xrok
+child exits; ordinary reconnects to the same URL are handled by xrok. A changed
+announced URL requires restarting the managed checker. Stopping the command cleans
+up only its own child, listener and temporary profile. Restarting `check-service`
+generates a new signing key and descriptor; update remote checkers accordingly.
+
+Validation in this mode proves compatibility with **this endpoint and port**. It
+does not prove reachability of every other destination. Use a separate database
+when comparing against the default public checker: repeated failures against the
+owned target can prune proxies that work for other ports. `/stats` reports
+`validation_mode: "owned"` or `"public"`.
+
+The service trusts current xrok's loopback-delivered `X-Real-IP` as the visitor peer,
+retains any earlier X-Forwarded-For chain for leak detection, and removes metadata
+added by xrok. Missing valid origin metadata fails readiness. Because the visitor
+path is encrypted, it cannot classify plaintext forwarding anonymity: accepted
+proxies keep an **unknown** anonymity tier, rather than being labeled elite. This
+mode does not test plaintext HTTP injection, UDP, ICMP or QUIC. SOCKS5 UDP ASSOCIATE
+continues to obey `--udpMode` independently of the TCP checker.
+
 ## Stable proxy routes and diagnostics
 
 The default `--selectionPolicy rotate` retains rotating exits. For long-lived clients,

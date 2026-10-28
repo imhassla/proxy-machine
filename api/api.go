@@ -212,6 +212,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		Discovered          int                        `json:"discovered"`  // unique proxies attributed to neighbor discovery
 		DiscoverOn          bool                       `json:"discover_on"` // whether the discovery job is enabled
 		UDPMode             string                     `json:"udp_mode"`
+		ValidationMode      string                     `json:"validation_mode"`
 		Scheduling          checker.SchedulingSnapshot `json:"scheduling"`
 		Relay               metrics.Snapshot           `json:"relay"`
 	}{
@@ -222,6 +223,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		Relay:               s.metrics.Snapshot(),
 		Scheduling:          s.manager.Scheduling(),
 		UDPMode:             s.udpMode,
+		ValidationMode:      s.manager.ValidationMode(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

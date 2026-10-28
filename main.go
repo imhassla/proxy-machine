@@ -23,6 +23,12 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "check-service" {
+		if err := runCheckService(os.Args[2:]); err != nil {
+			log.Fatalf("check-service: %v", err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "probe" {
 		if err := runProbe(os.Args[2:]); err != nil {
 			log.Fatalf("probe: %v", err)
@@ -78,6 +84,16 @@ func runService(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	tunnel, err := setupOwnedChecks(ctx, cfg, manager)
+	if err != nil {
+		_ = database.Close()
+		return err
+	}
+	var tunnelDone <-chan struct{}
+	if tunnel != nil {
+		defer tunnel.Close()
+		tunnelDone = tunnel.Done()
+	}
 
 	met := metrics.New()
 	server := api.New(cfg.APIAddr, manager, database, met)
@@ -190,6 +206,11 @@ func runService(args []string) error {
 	var fatal error
 	select {
 	case <-ctx.Done(): // SIGINT/SIGTERM — normal shutdown
+	case <-tunnelDone:
+		if ctx.Err() == nil {
+			fatal = fmt.Errorf("owned xrok tunnel exited: %w", tunnel.Err())
+		}
+		stop()
 	case fatal = <-startErr: // a listener died — shut everything down and exit non-zero
 		log.Printf("fatal: %v", fatal)
 		stop()
@@ -284,7 +305,16 @@ func runDiscover(args []string) error {
 	}()
 
 	manager := checker.New(cfg, database)
-	if err := runDiscoverPass(context.Background(), manager, scanner.New(database), cfg); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	tunnel, err := setupOwnedChecks(ctx, cfg, manager)
+	if err != nil {
+		return err
+	}
+	if tunnel != nil {
+		defer tunnel.Close()
+	}
+	if err := runDiscoverPass(ctx, manager, scanner.New(database), cfg); err != nil {
 		return err
 	}
 	return nil
@@ -308,6 +338,16 @@ func runValidate(args []string) error {
 		return fmt.Errorf("init database: %w", err)
 	}
 	defer func() { _ = database.Close() }()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	manager := checker.New(cfg, database)
+	tunnel, err := setupOwnedChecks(ctx, cfg, manager)
+	if err != nil {
+		return err
+	}
+	if tunnel != nil {
+		defer tunnel.Close()
+	}
 
 	ch := make(chan string, 256)
 	go func() {
@@ -317,12 +357,16 @@ func runValidate(args []string) error {
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
 			if line != "" {
-				ch <- line
+				select {
+				case ch <- line:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()
 
-	stored, _, err := checker.New(cfg, database).ValidateAndStoreStream(context.Background(), ch)
+	stored, _, err := manager.ValidateAndStoreStream(ctx, ch)
 	if err != nil {
 		return err
 	}
