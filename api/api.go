@@ -25,14 +25,16 @@ var docsFS embed.FS
 
 // Server is the HTTP API server.
 type Server struct {
-	manager     *checker.CheckManager
-	db          *db.DB
-	metrics     *metrics.Metrics
-	upstreamsFn func() any // set via SetUpstreamsProvider; supplies /upstreams data
-	relayAddr   string     // advertised in /proxy.pac (set via SetRelayAddr)
-	discoverOn  bool       // whether the neighbor-discovery job is enabled (set via SetDiscoverEnabled)
-	sessions    *sessionStore
-	srv         *http.Server
+	manager        *checker.CheckManager
+	db             *db.DB
+	metrics        *metrics.Metrics
+	capabilitiesFn func() any
+	upstreamsFn    func() any // set via SetUpstreamsProvider; supplies /upstreams data
+	udpMode        string
+	relayAddr      string // advertised in /proxy.pac (set via SetRelayAddr)
+	discoverOn     bool   // whether the neighbor-discovery job is enabled (set via SetDiscoverEnabled)
+	sessions       *sessionStore
+	srv            *http.Server
 }
 
 // SetUpstreamsProvider wires a provider (e.g. relay.Server.Upstreams) that supplies the
@@ -66,6 +68,7 @@ func New(addr string, manager *checker.CheckManager, database *db.DB, m *metrics
 	mux.HandleFunc("/insights", s.handleInsights)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/upstreams", s.handleUpstreams)
+	mux.HandleFunc("/capabilities", s.handleCapabilities)
 	s.srv = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -192,16 +195,33 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			discovered = n
 		}
 	}
+	oldestAge := 0.0
+	if s.db != nil {
+		if oldest, err := s.db.OldestValidation(); err == nil {
+			if at, err := time.Parse("2006-01-02 15:04:05", oldest); err == nil {
+				oldestAge = time.Since(at).Seconds()
+				if oldestAge < 0 {
+					oldestAge = 0
+				}
+			}
+		}
+	}
 	out := struct {
-		Proxies    map[string]int   `json:"proxies"`
-		Discovered int              `json:"discovered"`  // unique proxies attributed to neighbor discovery
-		DiscoverOn bool             `json:"discover_on"` // whether the discovery job is enabled
-		Relay      metrics.Snapshot `json:"relay"`
+		OldestValidationAge float64                    `json:"oldest_validation_age_seconds"`
+		Proxies             map[string]int             `json:"proxies"`
+		Discovered          int                        `json:"discovered"`  // unique proxies attributed to neighbor discovery
+		DiscoverOn          bool                       `json:"discover_on"` // whether the discovery job is enabled
+		UDPMode             string                     `json:"udp_mode"`
+		Scheduling          checker.SchedulingSnapshot `json:"scheduling"`
+		Relay               metrics.Snapshot           `json:"relay"`
 	}{
-		Proxies:    s.proxyCounts(),
-		Discovered: discovered,
-		DiscoverOn: s.discoverOn,
-		Relay:      s.metrics.Snapshot(),
+		OldestValidationAge: oldestAge,
+		Proxies:             s.proxyCounts(),
+		Discovered:          discovered,
+		DiscoverOn:          s.discoverOn,
+		Relay:               s.metrics.Snapshot(),
+		Scheduling:          s.manager.Scheduling(),
+		UDPMode:             s.udpMode,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -342,6 +362,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	bw := bufio.NewWriter(w)
 	defer bw.Flush()
 
+	fmt.Fprintln(bw, "# TYPE proxymachine_upstream_stage_failures_total counter")
+	for stage, n := range s.metrics.FailureStages() {
+		fmt.Fprintf(bw, "proxymachine_upstream_stage_failures_total{stage=%q} %d\n", stage, n)
+	}
 	fmt.Fprintln(bw, "# HELP proxymachine_proxies Number of validated proxies stored, by type.")
 	fmt.Fprintln(bw, "# TYPE proxymachine_proxies gauge")
 	for _, t := range serveTypes {
@@ -615,3 +639,21 @@ func isValidProxyType(t string) bool {
 	}
 	return false
 }
+
+// SetCapabilitiesProvider wires read-only destination diagnostics.
+func (s *Server) SetCapabilitiesProvider(fn func() any) { s.capabilitiesFn = fn }
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if s.capabilitiesFn == nil {
+		http.Error(w, "capabilities unavailable", 404)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.capabilitiesFn())
+}
+
+// SetUDPMode advertises whether UDP exits directly or is disabled.
+func (s *Server) SetUDPMode(mode string) { s.udpMode = mode }

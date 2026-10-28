@@ -16,16 +16,17 @@ import (
 
 // SocksServer is a client-facing SOCKS5 proxy: clients point their socks5:// at it and it
 // tunnels each CONNECT through a rotating, validated upstream proxy (the same selection +
-// health + failover path the HTTP relay uses, via the injected dial func). Only the
-// CONNECT command is supported (BIND/UDP-ASSOCIATE are rejected). When user is set,
+// health + failover path the HTTP relay uses, via the injected dial func). UDP ASSOCIATE
+// exits directly from this host unless disabled; BIND is rejected. When user is set,
 // username/password auth (RFC 1929) is required; otherwise no-auth is offered. Bind
 // defaults to loopback so a fresh install is not an open SOCKS proxy.
 type SocksServer struct {
-	addr       string
-	user, pass string
-	timeout    time.Duration
-	dial       func(ctx context.Context, target string) (net.Conn, error)
-	metrics    *metrics.Metrics
+	addr        string
+	user, pass  string
+	timeout     time.Duration
+	dial        func(ctx context.Context, target string) (net.Conn, error)
+	metrics     *metrics.Metrics
+	udpDisabled bool
 
 	mu     sync.Mutex
 	ln     net.Listener
@@ -156,6 +157,10 @@ func (s *SocksServer) handle(conn net.Conn) {
 		}
 		pipe(conn, upstream)
 	case cmdUDPAssociate:
+		if s.udpDisabled {
+			_ = writeReply(conn, repCmdNotSupported)
+			return
+		}
 		s.metrics.IncRelaySocks()
 		_ = conn.SetDeadline(time.Time{})
 		s.handleUDPAssociate(conn)

@@ -9,6 +9,44 @@ import (
 	"time"
 )
 
+func TestSOCKSHandshakeCancellation(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan struct{})
+	go func() {
+		c, e := ln.Accept()
+		if e != nil {
+			return
+		}
+		defer c.Close()
+		close(accepted)
+		io.Copy(io.Discard, c)
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		c, e := Dial5(ctx, ln.Addr().String(), "origin:443")
+		if c != nil {
+			c.Close()
+		}
+		done <- e
+	}()
+	<-accepted
+	cancel()
+	select {
+	case e := <-done:
+		if e == nil {
+			t.Fatal("canceled greeting succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SOCKS handshake ignored cancellation")
+	}
+}
+
 // fakeSocks5 accepts a no-auth SOCKS5 CONNECT, then echoes (standing in for the target).
 func fakeSocks5(t *testing.T) string {
 	t.Helper()

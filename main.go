@@ -23,6 +23,12 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "probe" {
+		if err := runProbe(os.Args[2:]); err != nil {
+			log.Fatalf("probe: %v", err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "scan" {
 		if err := runScanner(os.Args[2:]); err != nil {
 			log.Fatalf("scan: %v", err)
@@ -78,6 +84,8 @@ func runService(args []string) error {
 	relayServer := relay.New(cfg, manager, database, met)
 	// Expose the relay's live upstream health via GET /upstreams.
 	server.SetUpstreamsProvider(func() any { return relayServer.Upstreams() })
+	server.SetCapabilitiesProvider(func() any { return relayServer.Capabilities() })
+	server.SetUDPMode(cfg.UDPMode)
 	server.SetRelayAddr(cfg.RelayAddr) // advertised first in /proxy.pac
 	server.SetDiscoverEnabled(cfg.Discover)
 

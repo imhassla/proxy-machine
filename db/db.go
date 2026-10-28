@@ -838,3 +838,13 @@ func (d *DB) GeoByIPs(ips []string) (map[string]GeoRow, error) {
 	}
 	return out, nil
 }
+
+// OldestValidation returns the oldest stored nonempty UTC validation timestamp.
+func (d *DB) OldestValidation() (string, error) {
+	var oldest sql.NullString
+	err := d.conn.QueryRow(`SELECT MIN(last_checked) FROM (
+ SELECT last_checked FROM http UNION ALL SELECT last_checked FROM https
+ UNION ALL SELECT last_checked FROM socks4 UNION ALL SELECT last_checked FROM socks5
+ ) WHERE last_checked <> ''`).Scan(&oldest)
+	return oldest.String, err
+}

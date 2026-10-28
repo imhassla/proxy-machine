@@ -9,6 +9,8 @@ import (
 // upstream it last succeeded through, so sites that bind a session to the egress IP keep
 // seeing the same IP. Entries use a sliding TTL: each hit refreshes the expiry, so active
 // sessions stay pinned and idle ones age out. now is injectable for tests.
+const maxStickySessions = 4096
+
 type stickyStore struct {
 	mu  sync.Mutex
 	m   map[string]stickyEntry
@@ -51,11 +53,21 @@ func (s *stickyStore) get(key string) string {
 
 // set pins key to addr with a fresh TTL.
 func (s *stickyStore) set(key, addr string) {
-	if key == "" || addr == "" {
+	if key == "" || addr == "" || len(key) > 512 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.m[key]; !exists && len(s.m) >= maxStickySessions {
+		var oldest string
+		var expiry time.Time
+		for key, entry := range s.m {
+			if expiry.IsZero() || entry.expiry.Before(expiry) {
+				oldest, expiry = key, entry.expiry
+			}
+		}
+		delete(s.m, oldest)
+	}
 	s.m[key] = stickyEntry{addr: addr, expiry: s.now().Add(s.ttl)}
 }
 

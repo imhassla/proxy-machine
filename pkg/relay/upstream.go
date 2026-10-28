@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"proxymachine/pkg/socks"
@@ -41,8 +42,10 @@ func dialUpstream(ctx context.Context, candidate, target string, timeout time.Du
 	d := &net.Dialer{KeepAlive: 30 * time.Second}
 	conn, err := d.DialContext(dctx, "tcp", u.Host)
 	if err != nil {
-		return nil, fmt.Errorf("dial upstream %s: %w", u.Host, err)
+		return nil, &attemptError{stage: "dial", err: err}
 	}
+	release := interruptHandshake(dctx, conn)
+	defer release()
 	if dl, ok := dctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
@@ -53,7 +56,7 @@ func dialUpstream(ctx context.Context, candidate, target string, timeout time.Du
 		tconn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, ServerName: hostOnly(u.Host)})
 		if err := tconn.HandshakeContext(dctx); err != nil {
 			_ = conn.Close()
-			return nil, fmt.Errorf("tls handshake to https proxy: %w", err)
+			return nil, &attemptError{stage: "proxy_tls", err: err}
 		}
 		conn = tconn
 	}
@@ -61,6 +64,7 @@ func dialUpstream(ctx context.Context, candidate, target string, timeout time.Du
 		_ = conn.Close()
 		return nil, err
 	}
+	release()
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
 }
@@ -85,6 +89,8 @@ func dialChain(ctx context.Context, chain []string, target string, timeout time.
 	if err != nil {
 		return nil, fmt.Errorf("dial chain entry %s: %w", entry.Host, err)
 	}
+	release := interruptHandshake(dctx, conn)
+	defer release()
 	if dl, ok := dctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
@@ -122,6 +128,7 @@ func dialChain(ctx context.Context, chain []string, target string, timeout time.
 			}
 		}
 	}
+	release()
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
 }
@@ -139,18 +146,20 @@ func hostOnly(hostPort string) string {
 func httpConnect(conn net.Conn, target string) (net.Conn, error) {
 	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Connection: keep-alive\r\n\r\n", target, target)
 	if _, err := io.WriteString(conn, req); err != nil {
-		return conn, fmt.Errorf("write CONNECT: %w", err)
+		return conn, &attemptError{stage: "proxy_handshake", err: err}
 	}
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		return conn, fmt.Errorf("read CONNECT response: %w", err)
-	}
-	if resp.Body != nil {
-		_ = resp.Body.Close()
+		return conn, &attemptError{stage: "proxy_handshake", err: err}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return conn, fmt.Errorf("upstream CONNECT refused: %s", resp.Status)
+		stage := "connect_refused"
+		if resp.StatusCode == http.StatusProxyAuthRequired {
+			stage = "proxy_auth"
+		}
+		// Do not drain an untrusted proxy error body: it may never terminate.
+		return conn, &attemptError{stage: stage, status: resp.StatusCode, err: fmt.Errorf("upstream CONNECT refused: %s", resp.Status)}
 	}
 	// The bufio.Reader may hold tunnel bytes read past the 200 headers — front them so the
 	// caller's first Read doesn't lose data.
@@ -180,37 +189,33 @@ const tunnelIdleTimeout = 5 * time.Minute
 // pipe copies bytes bidirectionally between two conns until either side closes/errs or the
 // tunnel goes idle past tunnelIdleTimeout, then tears both down. Used for client CONNECT
 // tunnels and SOCKS relays.
-func pipe(a, b net.Conn) {
+func pipe(a, b net.Conn) { pipeStreams(a, a, b, tunnelIdleTimeout) }
+
+// pipeStreams also supports HTTP Upgrade bodies, whose transport exposes a
+// ReadWriteCloser rather than a net.Conn. Activity in either direction resets idle.
+func pipeStreams(client net.Conn, reader io.Reader, upstream io.ReadWriteCloser, idle time.Duration) {
+	var once sync.Once
+	closeBoth := func() { once.Do(func() { client.Close(); upstream.Close() }) }
+	timer := time.AfterFunc(idle, closeBoth)
+	defer timer.Stop()
 	done := make(chan struct{}, 2)
-	cp := func(dst, src net.Conn) {
-		buf := make([]byte, 32*1024)
-		for {
-			// Reset the idle deadline on each read; a fully-silent tunnel trips it and
-			// unblocks, preventing an indefinite fd/goroutine leak on a dead peer.
-			_ = src.SetReadDeadline(time.Now().Add(tunnelIdleTimeout))
-			n, rerr := src.Read(buf)
-			if n > 0 {
-				_ = dst.SetWriteDeadline(time.Now().Add(tunnelIdleTimeout))
-				if _, werr := dst.Write(buf[:n]); werr != nil {
-					break
-				}
-			}
-			if rerr != nil {
-				break
-			}
-		}
-		// Unblock the other direction PROMPTLY: set a past deadline on BOTH conns, so a peer
-		// blocked in Write (not Read) collapses immediately instead of waiting out the idle
-		// backstop.
-		now := time.Now()
-		_ = src.SetDeadline(now)
-		_ = dst.SetDeadline(now)
-		done <- struct{}{}
+	go func() { _, _ = io.Copy(client, &activityReader{upstream, timer, idle}); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(upstream, &activityReader{reader, timer, idle}); done <- struct{}{} }()
+	<-done
+	closeBoth()
+	<-done
+}
+
+type activityReader struct {
+	io.Reader
+	timer *time.Timer
+	idle  time.Duration
+}
+
+func (r *activityReader) Read(p []byte) (int, error) {
+	n, e := r.Reader.Read(p)
+	if n > 0 {
+		r.timer.Reset(r.idle)
 	}
-	go cp(a, b)
-	go cp(b, a)
-	<-done
-	<-done
-	_ = a.Close()
-	_ = b.Close()
+	return n, e
 }

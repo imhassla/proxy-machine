@@ -18,8 +18,9 @@ import (
 
 // Config holds the application settings.
 type Config struct {
-	Workers int
-	Timeout time.Duration
+	MaxCandidates int // Maximum new candidates admitted per harvest cycle; zero disables the cap.
+	Workers       int
+	Timeout       time.Duration
 	// ConnectTimeout bounds just the TCP connect (+ SOCKS handshake) to a candidate proxy,
 	// separately from Timeout (the whole per-proxy validation). A short connect timeout lets
 	// dead proxies fail fast so a sweep converges, while a slow-but-alive proxy still gets
@@ -63,6 +64,9 @@ type Config struct {
 	// StickyTTL is the sliding idle lifetime of a pin.
 	StickyHeader string
 	StickyTTL    time.Duration
+	// SelectionPolicy is rotate (default) or stable (prefer a healthy destination pin).
+	SelectionPolicy string
+	UDPMode         string // direct (legacy behavior) or off; public TCP proxies do not carry UDP.
 
 	// Sources, when non-empty, REPLACES the built-in public proxy-list URLs the checker
 	// harvests from. Each source's type is inferred from its URL (http/socks4/socks5).
@@ -117,6 +121,7 @@ type Config struct {
 func Load(args []string) (*Config, error) {
 	cfg := &Config{
 		Workers:                50,
+		MaxCandidates:          10000,
 		Timeout:                30 * time.Second,
 		ConnectTimeout:         5 * time.Second,
 		DBPath:                 "data.db",
@@ -127,6 +132,8 @@ func Load(args []string) (*Config, error) {
 		MaxFailover:            5,
 		ChainLength:            1,
 		StickyTTL:              10 * time.Minute,
+		SelectionPolicy:        "rotate",
+		UDPMode:                "direct",
 		MaxProxyAge:            24 * time.Hour,
 		MaxRecheckInterval:     15 * time.Minute,
 		HoneypotCheck:          true,
@@ -141,6 +148,8 @@ func Load(args []string) (*Config, error) {
 		DiscoverGapFillHosts:   8,
 	}
 
+	var maxCandidates int
+	var selectionPolicy, udpMode string
 	var configPath string
 	var workers, maxFailover, chainLength, discoverMinDensity, discoverExpandSample, discoverSeqSpan, discoverPortWindow, discoverAdaptiveRounds, discoverGapFillHosts int
 	var timeout, checkInterval, stickyTTL, connectTimeout, maxProxyAge, maxRecheckInterval, discoverInterval time.Duration
@@ -148,6 +157,7 @@ func Load(args []string) (*Config, error) {
 
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.StringVar(&configPath, "config", "", "Path to JSON or INI config file")
+	fs.IntVar(&maxCandidates, "maxCandidates", -1, "Maximum new candidates per harvest cycle (default 10000; 0 unlimited)")
 	fs.IntVar(&workers, "workers", -1, "Number of workers")
 	fs.DurationVar(&timeout, "timeout", -1, "Timeout duration")
 	fs.DurationVar(&connectTimeout, "connectTimeout", -1, "Per-proxy connect timeout (default 5s)")
@@ -160,6 +170,8 @@ func Load(args []string) (*Config, error) {
 	fs.StringVar(&socksAddr, "socksAddr", "", "Client SOCKS5 listen address (default 127.0.0.1:1080; 'off' to disable)")
 	fs.IntVar(&maxFailover, "maxFailover", -1, "Max upstream proxies tried per request (default 5)")
 	fs.IntVar(&chainLength, "chainLength", -1, "Route each tunnel through N chained proxies (default 1 = single hop)")
+	fs.StringVar(&udpMode, "udpMode", "", "SOCKS5 UDP egress: direct|off (default direct; never through the pool)")
+	fs.StringVar(&selectionPolicy, "selectionPolicy", "", "Upstream selection: rotate|stable (default rotate)")
 	fs.StringVar(&stickyHeader, "stickyHeader", "", "Request header for session affinity (empty = off)")
 	fs.DurationVar(&stickyTTL, "stickyTTL", -1, "Sliding TTL of a sticky-session pin (default 10m)")
 	fs.StringVar(&sourcesArg, "sources", "", "Comma-separated proxy-list URLs (replaces the built-in sources)")
@@ -188,6 +200,9 @@ func Load(args []string) (*Config, error) {
 		}
 	}
 
+	if maxCandidates >= 0 {
+		cfg.MaxCandidates = maxCandidates
+	}
 	if workers >= 0 {
 		cfg.Workers = workers
 	}
@@ -280,6 +295,24 @@ func Load(args []string) (*Config, error) {
 		cfg.ProxyPass = proxyPass
 	}
 
+	if cfg.MaxCandidates > 0 && cfg.MaxCandidates < 4 {
+		return nil, fmt.Errorf("maxCandidates must be 0 or at least 4 (all scan proxy types)")
+	}
+	if udpMode != "" {
+		cfg.UDPMode = udpMode
+	}
+	if cfg.UDPMode != "direct" && cfg.UDPMode != "off" {
+		return nil, fmt.Errorf("udpMode must be direct or off")
+	}
+	if selectionPolicy != "" {
+		cfg.SelectionPolicy = selectionPolicy
+	}
+	if cfg.SelectionPolicy != "rotate" && cfg.SelectionPolicy != "stable" {
+		return nil, fmt.Errorf("selectionPolicy must be rotate or stable")
+	}
+	if cfg.SelectionPolicy == "stable" && cfg.ChainLength > 1 {
+		return nil, fmt.Errorf("stable selection requires chainLength=1")
+	}
 	return cfg, nil
 }
 
@@ -301,6 +334,7 @@ func loadFile(path string, cfg *Config) error {
 }
 
 type fileConfig struct {
+	MaxCandidates      *int      `json:"maxCandidates"`
 	Workers            *int      `json:"workers"`
 	Timeout            *string   `json:"timeout"`
 	ConnectTimeout     *string   `json:"connectTimeout"`
@@ -313,6 +347,8 @@ type fileConfig struct {
 	SocksAddr          *string   `json:"socksAddr"`
 	MaxFailover        *int      `json:"maxFailover"`
 	ChainLength        *int      `json:"chainLength"`
+	UDPMode            *string   `json:"udpMode"`
+	SelectionPolicy    *string   `json:"selectionPolicy"`
 	StickyHeader       *string   `json:"stickyHeader"`
 	StickyTTL          *string   `json:"stickyTTL"`
 	Sources            *[]string `json:"sources"`
@@ -369,6 +405,12 @@ func loadINI(data []byte, cfg *Config) error {
 		}
 
 		switch key {
+		case "maxcandidates":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("invalid maxCandidates: %w", err)
+			}
+			fc.MaxCandidates = &v
 		case "workers":
 			v, err := strconv.Atoi(val)
 			if err != nil {
@@ -430,6 +472,10 @@ func loadINI(data []byte, cfg *Config) error {
 			if fc.ChainLength == nil {
 				fc.ChainLength = &v
 			}
+		case "udpmode":
+			fc.UDPMode = &val
+		case "selectionpolicy":
+			fc.SelectionPolicy = &val
 		case "stickyheader":
 			if fc.StickyHeader == nil {
 				fc.StickyHeader = &val
@@ -470,6 +516,18 @@ func loadINI(data []byte, cfg *Config) error {
 }
 
 func applyFileConfig(fc fileConfig, cfg *Config) error {
+	if fc.UDPMode != nil {
+		cfg.UDPMode = *fc.UDPMode
+	}
+	if fc.MaxCandidates != nil {
+		if *fc.MaxCandidates < 0 {
+			return fmt.Errorf("maxCandidates must be nonnegative")
+		}
+		cfg.MaxCandidates = *fc.MaxCandidates
+	}
+	if fc.SelectionPolicy != nil {
+		cfg.SelectionPolicy = *fc.SelectionPolicy
+	}
 	if fc.Workers != nil {
 		if *fc.Workers < 0 {
 			return fmt.Errorf("workers must be non-negative")

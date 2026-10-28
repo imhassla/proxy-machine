@@ -188,3 +188,10 @@ func (h *health) order(candidates []string) []string {
 	}
 	return append(append(b0, b1...), b2...)
 }
+
+func (h *health) failed(addr string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s := h.m[addr]
+	return s != nil && (s.fails > 0 || s.openUntil.After(h.now()))
+}

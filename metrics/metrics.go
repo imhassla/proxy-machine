@@ -13,6 +13,7 @@ type Metrics struct {
 	relayFailures    atomic.Int64
 	upstreamAttempts atomic.Int64
 	upstreamFailures atomic.Int64
+	stageFailures    [8]atomic.Int64
 }
 
 // New returns a fresh metrics registry.
@@ -76,4 +77,30 @@ func (m *Metrics) Snapshot() Snapshot {
 		UpstreamAttempts: m.upstreamAttempts.Load(),
 		UpstreamFailures: m.upstreamFailures.Load(),
 	}
+}
+
+// FailureStages is the finite label vocabulary. Destinations never become metric labels.
+var failureStages = [...]string{"dial", "proxy_tls", "proxy_auth", "proxy_handshake", "connect_refused", "http_response", "body", "canceled"}
+
+func (m *Metrics) AddFailureStage(stage string) {
+	if m == nil {
+		return
+	}
+	for i, label := range failureStages {
+		if stage == label {
+			m.stageFailures[i].Add(1)
+			return
+		}
+	}
+}
+func (m *Metrics) FailureStages() map[string]int64 {
+	out := make(map[string]int64, len(failureStages))
+	for i, label := range failureStages {
+		if m != nil {
+			out[label] = m.stageFailures[i].Load()
+		} else {
+			out[label] = 0
+		}
+	}
+	return out
 }

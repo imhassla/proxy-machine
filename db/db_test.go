@@ -17,6 +17,18 @@ func setupDB(t *testing.T) *DB {
 	return db
 }
 
+func TestOldestValidationAcrossTypes(t *testing.T) {
+	d := setupDB(t)
+	if oldest, err := d.OldestValidation(); err != nil || oldest != "" {
+		t.Fatalf("%q %v", oldest, err)
+	}
+	d.StoreProxy("http", "127.0.0.1:80", 1, "2026-10-28 12:00:00")
+	d.StoreProxy("socks5", "127.0.0.1:1080", 1, "2026-10-28 11:00:00")
+	if oldest, err := d.OldestValidation(); err != nil || oldest != "2026-10-28 11:00:00" {
+		t.Fatalf("%q %v", oldest, err)
+	}
+}
+
 func TestInitCreatesTables(t *testing.T) {
 	db, err := OpenInMemory()
 	if err != nil {

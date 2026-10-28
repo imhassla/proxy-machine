@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,6 +125,7 @@ var testableTypes = []string{"http", "https", "socks5", "socks4"}
 type proxyJob struct {
 	addr    string
 	typ     string
+	due     time.Time
 	recheck bool // a proxy already in the DB being re-validated (prune it if it now fails)
 }
 
@@ -141,11 +143,16 @@ const pruneThreshold = 3
 
 // CheckManager orchestrates proxy harvesting, validation, persistence and serving.
 type CheckManager struct {
-	cfg          *config.Config
-	db           *db.DB
-	cache        map[string][]string
-	mu           sync.RWMutex
-	directClient *http.Client
+	cfg           *config.Config
+	db            *db.DB
+	cache         map[string][]string
+	mu            sync.RWMutex
+	directClient  *http.Client
+	gate          *validationGate
+	scheduling    *schedulerStats
+	skipHarvest   bool
+	skipRechecks  bool
+	harvestOffset int
 
 	// recheckFails counts consecutive failed rechecks per "typ|addr" (touched only by the
 	// single RunCycle goroutine). A proxy is pruned once it reaches pruneThreshold; any
@@ -184,6 +191,8 @@ func New(cfg *config.Config, database *db.DB) *CheckManager {
 	}
 	return &CheckManager{
 		cfg:          cfg,
+		scheduling:   &schedulerStats{},
+		gate:         newValidationGate(cfg.Workers),
 		db:           database,
 		cache:        make(map[string][]string),
 		directClient: &http.Client{Timeout: timeout},
@@ -208,6 +217,9 @@ func (cm *CheckManager) Start(ctx context.Context) error {
 	if cm.cfg == nil {
 		return fmt.Errorf("config is required")
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := cm.startRechecks(ctx)
+	defer func() { cancel(); <-done }()
 	interval := cm.cfg.CheckInterval
 	if interval <= 0 {
 		interval = 60 * time.Second
@@ -378,58 +390,94 @@ func (cm *CheckManager) RunCycle(ctx context.Context) {
 // scanner's _scan_results (untyped → tried as each testable type), and stored proxies
 // (recheck). A nil/absent DB simply yields fewer sources.
 func (cm *CheckManager) gatherCandidates(ctx context.Context) (jobs []proxyJob, scanIPs []string) {
-	seen := map[proxyJob]int{} // (addr,typ) → index in jobs
-	add := func(addr, typ string, recheck bool) {
+	seen := map[proxyJob]int{}
+	newCount := 0
+	add := func(addr, typ string, recheck bool) bool {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
-			return
+			return false
 		}
 		key := proxyJob{addr: addr, typ: typ}
 		if i, ok := seen[key]; ok {
-			// Already queued. OR the recheck flag UP (never down): a proxy that is both
-			// stored AND on a fresh public list must keep recheck=true so it can be
-			// pruned if it now fails — public lists are added first, so without this the
-			// stored-proxy recheck flag would be lost and dead proxies never pruned.
 			if recheck {
 				jobs[i].recheck = true
 			}
-			return
+			return true
+		}
+		if !recheck && cm.cfg.MaxCandidates > 0 && newCount >= cm.cfg.MaxCandidates {
+			return false
+		}
+		if !recheck {
+			newCount++
 		}
 		seen[key] = len(jobs)
 		jobs = append(jobs, proxyJob{addr: addr, typ: typ, recheck: recheck})
+		return true
 	}
-
-	// Public lists: typed by URL (http/socks5/socks4). All are validatable now.
-	for typ, list := range cm.fetchPublicProxies(ctx) {
-		for _, p := range list {
-			add(p, typ, false)
-		}
-	}
-
 	if cm.db != nil {
-		// The scanner's open ip:ports — type unknown, so try each testable type.
-		if scanIPs, _ = cm.db.GetScanResults(); len(scanIPs) > 0 {
-			for _, ipPort := range scanIPs {
+		// Scans precede bulk lists so a full public-list allowance cannot discard or
+		// indefinitely defer scanner results. Consume only fully admitted addresses.
+		if !cm.skipHarvest {
+			allScan, _ := cm.db.GetScanResults()
+			for _, ipPort := range allScan {
+				complete := true
 				for _, typ := range testableTypes {
-					add(ipPort, typ, false)
-				}
-			}
-		}
-		// Re-validate already-stored proxies so stale ones get pruned and live ones
-		// get a fresh last_checked — but ADAPTIVELY: skip stored proxies not yet due for a
-		// recheck (stable ones have a longer interval), unless they also appear on a fresh
-		// list above (then they're already queued and validated anyway).
-		now := time.Now()
-		for _, typ := range testableTypes {
-			stored, _ := cm.db.GetProxiesByType(typ)
-			for _, p := range stored {
-				if cm.cfg.MaxRecheckInterval > 0 {
-					if due, ok := cm.nextRecheck[typ+"|"+p]; ok && now.Before(due) {
-						continue // not due yet
+					if !add(ipPort, typ, false) {
+						complete = false
 					}
 				}
-				add(p, typ, true)
+				if complete {
+					scanIPs = append(scanIPs, ipPort)
+				}
 			}
+		}
+		if !cm.skipRechecks {
+			now := time.Now()
+			for _, typ := range testableTypes {
+				stored, _ := cm.db.GetProxiesByType(typ)
+				for _, p := range stored {
+					due := cm.nextRecheck[typ+"|"+p]
+					if cm.cfg.MaxRecheckInterval > 0 && !due.IsZero() && now.Before(due) {
+						continue
+					}
+					add(p, typ, true)
+					if due.IsZero() {
+						due = now
+					}
+					jobs[seen[proxyJob{addr: p, typ: typ}]].due = due
+				}
+			}
+		}
+	}
+	if !cm.skipHarvest {
+		lists := cm.fetchPublicProxies(ctx)
+		var total int
+		for _, typ := range testableTypes {
+			sort.Strings(lists[typ])
+			total += len(lists[typ])
+		}
+		if total > 0 {
+			offset := cm.harvestOffset % total
+			visited := 0
+			// Traverse the sorted typed lists circularly without another full candidate copy.
+			for pass := 0; pass < 2; pass++ {
+				at := 0
+				for _, typ := range testableTypes {
+					for _, p := range lists[typ] {
+						idx := at
+						at++
+						if (pass == 0 && idx < offset) || (pass == 1 && idx >= offset) {
+							continue
+						}
+						if cm.cfg.MaxCandidates > 0 && newCount >= cm.cfg.MaxCandidates {
+							break
+						}
+						add(p, typ, false)
+						visited++
+					}
+				}
+			}
+			cm.harvestOffset = (offset + visited) % total
 		}
 	}
 	return jobs, scanIPs
@@ -463,12 +511,31 @@ func (cm *CheckManager) recheckInterval(streak int) time.Duration {
 // every job has been checked (or ctx is cancelled).
 func (cm *CheckManager) validateStream(ctx context.Context, sip string, jobs []proxyJob) <-chan checkResult {
 	in := make(chan proxyJob)
+	for _, job := range jobs {
+		if job.recheck {
+			cm.scheduling.pendingRechecks.Add(1)
+		} else {
+			cm.scheduling.pendingCandidates.Add(1)
+		}
+	}
 	go func() {
 		defer close(in)
-		for _, job := range jobs {
+		for i, job := range jobs {
 			select {
 			case in <- job:
+				if job.recheck {
+					cm.scheduling.pendingRechecks.Add(-1)
+				} else {
+					cm.scheduling.pendingCandidates.Add(-1)
+				}
 			case <-ctx.Done():
+				for _, pending := range jobs[i:] {
+					if pending.recheck {
+						cm.scheduling.pendingRechecks.Add(-1)
+					} else {
+						cm.scheduling.pendingCandidates.Add(-1)
+					}
+				}
 				return
 			}
 		}
@@ -495,7 +562,25 @@ func (cm *CheckManager) validateStreamChan(ctx context.Context, sip string, work
 		go func() {
 			defer wg.Done()
 			for job := range in {
+				var release func()
+				if cm.gate != nil {
+					var err error
+					release, err = cm.gate.acquire(ctx, job.recheck)
+					if err != nil {
+						return
+					}
+				}
+				if job.recheck && !job.due.IsZero() {
+					lag := time.Since(job.due)
+					if lag < 0 {
+						lag = 0
+					}
+					cm.scheduling.lastRecheckLag.Store(int64(lag))
+				}
 				rt, anon, ok := cm.check(ctx, sip, job)
+				if release != nil {
+					release()
+				}
 				select {
 				case out <- checkResult{job: job, rt: rt, anon: anon, ok: ok}:
 				case <-ctx.Done():
@@ -869,7 +954,7 @@ func (cm *CheckManager) fetchPublicProxies(ctx context.Context) map[string][]str
 				return
 			}
 			for _, p := range list {
-				if _, loaded := dedupe.LoadOrStore(p, true); loaded {
+				if _, loaded := dedupe.LoadOrStore(typ+"|"+p, true); loaded {
 					continue
 				}
 				mu.Lock()

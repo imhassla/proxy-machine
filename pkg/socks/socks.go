@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -33,12 +34,28 @@ func dial(ctx context.Context, proxyAddr, target string, handshake func(net.Conn
 	if err != nil {
 		return nil, fmt.Errorf("dial socks proxy %s: %w", proxyAddr, err)
 	}
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()); close(done) })
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			if !stop() {
+				<-done
+			}
+		})
+	}
+	defer release()
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
 	if err := handshake(conn, target); err != nil {
 		_ = conn.Close()
 		return nil, err
+	}
+	release()
+	if ctx.Err() != nil {
+		conn.Close()
+		return nil, ctx.Err()
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil

@@ -174,11 +174,13 @@
         <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/proxy.pac'">GET /proxy.pac</a></b>
             — browser proxy auto-config (relay + fastest http fallbacks)</li>
         <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/stats'">GET /stats</a></b>
-            — JSON: proxy counts per type + relay counters</li>
+            — JSON: proxy counts, relay counters, recheck scheduling, oldest validation age, and UDP egress mode</li>
         <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/insights'">GET /insights</a></b>
             — JSON: anonymity tiers, latency histogram, top countries &amp; networks (ASN), fastest proxies</li>
         <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/upstreams'">GET /upstreams</a></b>
             — JSON: live relay upstream health (ewma latency, consecutive fails, circuit state)</li>
+        <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/capabilities'">GET /capabilities</a></b>
+            — expiring destination observations; CONNECT success does not verify target TLS or application content</li>
         <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/metrics'">GET /metrics</a></b>
             — Prometheus text format</li>
         <li><b><a href="#" onclick="window.location.href=getServerUrl()+'/ready'">GET /ready</a></b>

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -55,6 +56,10 @@ type Server struct {
 	metrics      *metrics.Metrics
 	stickyHeader string
 	sticky       *stickyStore
+	capabilities *capabilities
+	stable       bool
+	tunnelMu     sync.Mutex
+	tunnels      map[net.Conn]struct{}
 }
 
 // New creates a relay server from config: it listens on cfg.RelayAddr (default
@@ -79,17 +84,20 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB, m *
 		maxAttempts = 5
 	}
 	s := &Server{
-		manager:     manager,
-		db:          database,
-		user:        cfg.ProxyUser,
-		pass:        cfg.ProxyPass,
-		timeout:     timeout,
-		maxAttempts: maxAttempts,
-		chainLength: cfg.ChainLength,
-		metrics:     m,
-		done:        make(chan struct{}),
+		manager:      manager,
+		db:           database,
+		user:         cfg.ProxyUser,
+		pass:         cfg.ProxyPass,
+		timeout:      timeout,
+		maxAttempts:  maxAttempts,
+		chainLength:  cfg.ChainLength,
+		metrics:      m,
+		done:         make(chan struct{}),
+		capabilities: newCapabilities(),
+		stable:       cfg.SelectionPolicy == "stable",
+		tunnels:      make(map[net.Conn]struct{}),
 	}
-	if cfg.StickyHeader != "" {
+	if cfg.StickyHeader != "" || s.stable {
 		s.stickyHeader = cfg.StickyHeader
 		s.sticky = newStickyStore(cfg.StickyTTL)
 	}
@@ -146,6 +154,7 @@ func New(cfg *config.Config, manager *checker.CheckManager, database *db.DB, m *
 	// health-ranked upstreams as the HTTP relay. Empty SocksAddr disables it.
 	if cfg.SocksAddr != "" {
 		s.socks = NewSocks(cfg.SocksAddr, cfg.ProxyUser, cfg.ProxyPass, timeout, m, s.socksDial)
+		s.socks.udpDisabled = cfg.UDPMode == "off"
 	}
 	return s
 }
@@ -183,6 +192,10 @@ func (s *Server) Upstreams() []UpstreamStat {
 	sort.Slice(out, func(i, j int) bool { return out[i].Addr < out[j].Addr })
 	return out
 }
+
+// Capabilities returns bounded, expiring destination observations. They are deliberately
+// not persisted: a restart must not revive an expired destination compatibility claim.
+func (s *Server) Capabilities() []Capability { return s.capabilities.snapshot() }
 
 func round2(f float64) float64 { return float64(int64(f*100+0.5)) / 100 }
 
@@ -262,6 +275,11 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.stopOnce.Do(func() {
 		s.flushHealth() // persist the learned health on graceful shutdown
 		close(s.done)
+		s.tunnelMu.Lock()
+		for conn := range s.tunnels {
+			conn.Close()
+		}
+		s.tunnelMu.Unlock()
 		s.pool.close()
 	})
 	return err
@@ -294,13 +312,29 @@ func (s *Server) authOK(r *http.Request) bool {
 // stickyKeyFor returns the session-affinity key for a request (the configured header's
 // value), or "" when stickiness is disabled or the header is absent.
 func (s *Server) stickyKeyFor(r *http.Request) string {
-	if s.sticky == nil || s.stickyHeader == "" {
+	if s.sticky == nil {
 		return ""
 	}
-	return r.Header.Get(s.stickyHeader)
+	if s.stickyHeader != "" {
+		if key := r.Header.Get(s.stickyHeader); key != "" {
+			return "session:" + key
+		}
+	}
+	if s.stable {
+		target := r.Host
+		if r.Method != http.MethodConnect {
+			target = requestTarget(r)
+		}
+		return "target:" + canonicalTarget(target)
+	}
+	return ""
 }
 
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	if s.stickyHeader != "" && len(r.Header.Get(s.stickyHeader)) > 256 {
+		http.Error(w, "proxy session marker exceeds 256 bytes", http.StatusBadRequest)
+		return
+	}
 	if !s.authOK(r) {
 		w.Header().Set("Proxy-Authenticate", `Basic realm="proxy-machine"`)
 		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
@@ -315,6 +349,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	upgrade := strings.EqualFold(r.Header.Get("Upgrade"), "websocket") && headerToken(r.Header, "Connection", "upgrade")
+	if r.Header.Get("Upgrade") != "" && !upgrade {
+		http.Error(w, "unsupported upgrade", http.StatusBadRequest)
+		return
+	}
 	s.metrics.IncRelayHTTP()
 	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
@@ -340,12 +379,14 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		candidates = []string{addr}
 	}
 
+	candidates = s.capabilities.order(candidates, requestTarget(r), "http", s.stable)
+
 	// Session affinity: if this request's session is pinned to an upstream, try it first
 	// (failover to the rest still applies if it's dead).
 	stickyKey := s.stickyKeyFor(r)
 	if stickyKey != "" {
 		if pinned := s.sticky.get(stickyKey); pinned != "" {
-			candidates = moveToFront(candidates, pinned)
+			candidates = s.prefer(candidates, pinned, requestTarget(r), "http")
 		}
 	}
 
@@ -373,6 +414,10 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var lastErr error
 	attempts := 0
 	for _, proxyAddr := range candidates {
+		if ctx.Err() != nil {
+			lastErr = ctx.Err()
+			break
+		}
 		if attempts >= maxAttempts {
 			break
 		}
@@ -404,13 +449,26 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		stripHopByHop(outReq.Header)
+		if s.stickyHeader != "" {
+			outReq.Header.Del(s.stickyHeader)
+		}
+		if upgrade {
+			outReq.Header.Set("Connection", "Upgrade")
+			outReq.Header.Set("Upgrade", "websocket")
+		}
 
 		start := time.Now()
-		resp, err := client.Do(outReq)
+		var resp *http.Response
+		var streamCancel func()
+		if upgrade {
+			resp, err, streamCancel = upgradeRoundTrip(r.Context(), outReq, client, s.timeout)
+			defer streamCancel()
+		} else {
+			resp, err = client.Do(outReq)
+		}
 		// Feed the outcome to the health tracker so future selections prefer this upstream
 		// (on success, by latency) or back off from it (circuit breaker on repeated fails).
-		s.selector.report(proxyAddr, err == nil, time.Since(start))
-		s.metrics.AddUpstream(err == nil)
+		s.reportHTTP(ctx, proxyAddr, outReq, resp, err, time.Since(start))
 		if err != nil {
 			lastErr = err
 			// Fail over to the next upstream ONLY for idempotent/safe methods. A
@@ -428,6 +486,15 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			s.sticky.set(stickyKey, proxyAddr)
 		}
 
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			if !upgrade {
+				resp.Body.Close()
+				http.Error(w, "unexpected upstream upgrade", http.StatusBadGateway)
+				return
+			}
+			s.serveUpgrade(w, r, resp)
+			return
+		}
 		stripHopByHop(resp.Header)
 		for key, values := range resp.Header {
 			for _, v := range values {
@@ -437,6 +504,8 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 
 		if _, err := io.Copy(w, resp.Body); err != nil {
+			s.capabilities.record(proxyAddr, requestTarget(outReq), "http", "body", resp.StatusCode, false, time.Since(start))
+			s.metrics.AddFailureStage("body")
 			resp.Body.Close()
 			return
 		}
@@ -497,6 +566,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_ = upstream.Close()
 		return
 	}
+	if !s.trackTunnel(clientConn) {
+		upstream.Close()
+		return
+	}
+	defer s.untrackTunnel(clientConn)
 	// We own the conn now; a tunnel can be long-lived, so drop the server's I/O deadlines.
 	_ = clientConn.SetDeadline(time.Time{})
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
@@ -518,10 +592,18 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	pipe(&prefixConn{Conn: clientConn, r: clientReader}, upstream)
 }
 
-// socksDial adapts dialTunnel to the SOCKS listener's dial signature (no session affinity:
-// the SOCKS protocol carries no per-request header to key a sticky session on).
+// socksDial shares a destination pin in stable mode. SOCKS has no session header;
+// rotating mode retains the existing per-connection selection behavior.
 func (s *Server) socksDial(ctx context.Context, target string) (net.Conn, error) {
-	conn, _, err := s.dialTunnel(ctx, target, "")
+	key, preferred := "", ""
+	if s.stable {
+		key = "socks:" + canonicalTarget(target)
+		preferred = s.sticky.get(key)
+	}
+	conn, used, err := s.dialTunnel(ctx, target, preferred)
+	if err == nil && key != "" {
+		s.sticky.set(key, used)
+	}
 	return conn, err
 }
 
@@ -539,8 +621,9 @@ func (s *Server) dialTunnel(ctx context.Context, target, preferred string) (net.
 			return nil, "", err
 		}
 	}
+	cands = s.capabilities.order(cands, target, "connect", s.stable)
 	if preferred != "" {
-		cands = moveToFront(cands, preferred)
+		cands = s.prefer(cands, preferred, target, "connect")
 	}
 	maxAttempts := s.maxAttempts
 	if maxAttempts <= 0 {
@@ -557,14 +640,25 @@ func (s *Server) dialTunnel(ctx context.Context, target, preferred string) (net.
 		var lastErr error
 		attempts := 0
 		for base := 0; base+s.chainLength <= len(cands) && attempts < maxAttempts; base += s.chainLength {
+			if ctx.Err() != nil {
+				lastErr = ctx.Err()
+				break
+			}
 			chain := cands[base : base+s.chainLength]
 			start := time.Now()
 			conn, derr := dialChain(ctx, chain, target, attemptTimeout)
-			// Attribute the outcome to every hop (can't tell which failed); the circuit
-			// breaker's grace absorbs the occasional innocent penalty.
+			// A chain failure does not identify a faulty hop. Do not poison every
+			// proxy's global health or infer that each can directly reach target.
+			stage, status := failureStage(derr)
+			s.capabilities.record(strings.Join(chain, " -> "), target, "chain_connect", stage, status, derr == nil, time.Since(start))
 			for _, c := range chain {
-				s.selector.report(c, derr == nil, time.Since(start))
+				if derr == nil {
+					s.selector.report(c, true, time.Since(start))
+				}
 				s.metrics.AddUpstream(derr == nil)
+			}
+			if derr != nil {
+				s.metrics.AddFailureStage(stage)
 			}
 			if derr == nil {
 				return conn, chain[0], nil
@@ -581,14 +675,17 @@ func (s *Server) dialTunnel(ctx context.Context, target, preferred string) (net.
 	var lastErr error
 	attempts := 0
 	for _, cand := range cands {
+		if ctx.Err() != nil {
+			lastErr = ctx.Err()
+			break
+		}
 		if attempts >= maxAttempts {
 			break
 		}
 		attempts++
 		start := time.Now()
 		conn, derr := dialUpstream(ctx, cand, target, attemptTimeout)
-		s.selector.report(cand, derr == nil, time.Since(start))
-		s.metrics.AddUpstream(derr == nil)
+		s.reportTunnel(ctx, cand, target, derr, time.Since(start))
 		if derr == nil {
 			return conn, cand, nil
 		}
@@ -639,4 +736,74 @@ func stripHopByHop(h http.Header) {
 		h.Del(k)
 	}
 	h.Del("Connection")
+}
+
+// reportTunnel separates upstream reachability from destination compatibility.
+func (s *Server) reportTunnel(ctx context.Context, upstream, target string, err error, elapsed time.Duration) {
+	s.metrics.AddUpstream(err == nil)
+	if ctx.Err() != nil {
+		s.metrics.AddFailureStage("canceled")
+		return
+	}
+	stage, status := failureStage(err)
+	s.capabilities.record(upstream, target, "connect", stage, status, err == nil, elapsed)
+	if err == nil || stage == "dial" || stage == "proxy_tls" || stage == "proxy_auth" {
+		s.selector.report(upstream, err == nil, elapsed)
+	}
+	if err != nil {
+		s.metrics.AddFailureStage(stage)
+	}
+}
+
+func requestTarget(r *http.Request) string {
+	port := r.URL.Port()
+	if port == "" {
+		port = "80"
+		if r.URL.Scheme == "https" {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(r.URL.Hostname(), port)
+}
+func (s *Server) reportHTTP(ctx context.Context, upstream string, req *http.Request, resp *http.Response, err error, elapsed time.Duration) {
+	s.metrics.AddUpstream(err == nil)
+	if ctx.Err() != nil {
+		s.metrics.AddFailureStage("canceled")
+		return
+	}
+	stage, status := "http_response", 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	if err != nil {
+		stage, status = failureStage(err)
+	}
+	s.capabilities.record(upstream, requestTarget(req), "http", stage, status, err == nil, elapsed)
+	// An HTTP response (including origin 403) proves transport reachability only.
+	// A target read failure is destination-scoped; only a dial to the actual proxy
+	// is an unambiguous global transport failure.
+	if err == nil {
+		s.selector.report(upstream, true, elapsed)
+	} else {
+		var op *net.OpError
+		if errors.As(err, &op) && op.Op == "dial" && op.Addr != nil && op.Addr.String() == proxyURL(upstream).Host {
+			s.selector.report(upstream, false, elapsed)
+		}
+		s.metrics.AddFailureStage(stage)
+	}
+}
+
+// prefer checks the full live set, not just the rotated 64-entry retry window.
+func (s *Server) prefer(candidates []string, preferred, target, operation string) []string {
+	if !s.capabilities.usable(preferred, target, operation) || !s.selector.eligible(preferred) {
+		return candidates
+	}
+	out := make([]string, 0, len(candidates)+1)
+	out = append(out, preferred)
+	for _, candidate := range candidates {
+		if candidate != preferred {
+			out = append(out, candidate)
+		}
+	}
+	return out
 }

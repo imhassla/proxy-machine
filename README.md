@@ -80,6 +80,82 @@ low-yield) /24 neighbor port-scan through the pool. Run one-shot (`discover`) or
 background job (`--discover`; `--discoverInterval 0` loops pass after pass). The `validate`
 subcommand (reads `ip:port` from stdin) is the instrument used to measure a strategy's yield.
 
+## Stable proxy routes and diagnostics
+
+The default `--selectionPolicy rotate` retains rotating exits. For long-lived clients,
+use `--selectionPolicy stable` to reuse a healthy route to each destination. SOCKS5
+clients share a pin per destination; HTTP clients can supply an explicit session marker:
+
+```sh
+./proxymachine --selectionPolicy stable --stickyHeader X-Proxy-Session
+curl -x http://127.0.0.1:3333 --proxy-header 'X-Proxy-Session: example-session' https://your-controlled-endpoint.example/
+```
+
+An explicit HTTP session pin applies across requests and CONNECT connections. The
+configured affinity header is relay-local and is removed before forwarding. All client
+connections belonging to a session should use the same marker, including registration,
+control, and data connections. `stickyTTL` sets the sliding idle lifetime. Existing TCP
+streams cannot migrate to another upstream; failover applies to new connection attempts.
+Stable selection requires `chainLength=1`.
+
+Stable mode prefers recent successful destination observations. Unknown routes remain
+eligible for bounded discovery when no compatible route is known; recent failures are
+tried last. Pins are checked against the entire current candidate set, not just the retry
+window. A refusal to CONNECT to one host/port does not globally mark that proxy dead.
+An established CONNECT tunnel proves byte-stream access only, not target TLS or origin
+application success. Real origin HTTP responses, including 403, are forwarded unchanged.
+
+`GET /capabilities` exposes upstream, destination host/port, operation, stage, status,
+latency, and observation/expiry timestamps. This process-local cache holds at most 4096
+entries; successes expire after five minutes and failures after 30 seconds. It is not
+persisted across restarts. Session pins are also bounded to 4096 entries. `/upstreams`
+continues to describe global transport health. Stage failure counters are exposed by
+`/metrics` with a finite `stage` label vocabulary, never destination labels. These API
+endpoints can reveal destinations; retain the default loopback binding or provide
+appropriate access control around a wider bind.
+
+Use an explicit bounded probe for end-to-end target TLS and response integrity:
+
+```sh
+./proxymachine probe --proxy http://127.0.0.1:3333 \
+  --url https://your-controlled-endpoint.example/canary \
+  --sha256 EXPECTED_64_CHARACTER_HEX_DIGEST --timeout 15s
+```
+
+The probe prints JSON and exits nonzero on failure. It uses the specified proxy without
+a direct fallback, verifies target TLS, rejects redirects, and limits the response to
+1 MiB. A digest is optional; `body_verified` is true only when the supplied digest matches.
+The total probe budget is capped at 30 seconds. It reports a fresh observation rather
+than modifying the running service cache. HTTP,
+HTTPS-to-proxy, SOCKS4a (`socks4`/`socks4a`), and SOCKS5 (`socks5`/`socks5h`, proxy DNS)
+upstream URLs must include an explicit port. As with
+the existing relay, HTTPS-to-proxy accepts untrusted proxy-hop certificates; target TLS
+inside the tunnel is still verified.
+
+## Freshness and protocol behavior
+
+Stored upstream rechecks run independently of public-list harvesting, so a blocked list
+fetch or a large harvest does not stop freshness updates. Background validation shares
+one `workers` budget with discovery streams. About one fifth of its slots (at least one)
+are reserved for rechecks; with one worker, a due recheck gets the next free slot after
+an in-progress check. `maxCandidates` bounds new candidates admitted per harvest cycle
+(default 10000, minimum 4, or 0 to disable the cap). The public lists are visited circularly
+across cycles. Scan results omitted by the cap are retained for another cycle.
+`/stats` exposes pending dispatch counts, the last recheck scheduling lag, and the oldest
+stored validation age. These indicate backlog and freshness rather than promising a
+recheck deadline under every pool size or network condition.
+
+The HTTP relay supports plaintext WebSocket Upgrade as well as WebSocket carried inside
+CONNECT/SOCKS tunnels. A successful upgrade outlives the establishment budget. Idle
+streams are closed after five minutes without activity in either direction, and service
+shutdown closes upgraded and CONNECT streams. Origin redirects are forwarded to the
+client instead of being followed inside the relay.
+
+SOCKS5 UDP ASSOCIATE uses **direct egress from this host**, never the public TCP proxy
+pool. This remains the compatible default (`--udpMode direct`). Use `--udpMode off` to
+reject UDP ASSOCIATE without opening a UDP relay. `/stats` advertises `udp_mode`.
+TCP CONNECT and SOCKS CONNECT do not carry ICMP and do not imply anonymous UDP support.
+
 ## Configuration
 
 Flags override an optional `--config` JSON/INI file, which overrides defaults. The INI

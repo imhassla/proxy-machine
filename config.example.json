@@ -1,6 +1,7 @@
 {
   "dbPath": "data.db",
   "workers": 50,
+  "maxCandidates": 10000,
   "timeout": "30s",
   "connectTimeout": "5s",
   "checkInterval": "60s",
@@ -15,6 +16,8 @@
   "maxFailover": 5,
   "chainLength": 1,
 
+  "selectionPolicy": "rotate",
+  "udpMode": "direct",
   "stickyHeader": "",
   "stickyTTL": "10m",
 

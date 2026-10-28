@@ -80,8 +80,9 @@ func (p *transportPool) get(target string) *http.Client {
 	}
 
 	client := &http.Client{
-		Transport: transport,
-		Timeout:   p.timeout,
+		Transport:     transport,
+		Timeout:       p.timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 
 	p.clients[target] = client

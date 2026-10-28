@@ -39,6 +39,7 @@ type selector struct {
 	db         dbSource
 	mu         sync.Mutex
 	candidates []string
+	members    map[string]struct{}
 	nextIndex  int
 	// live is the proven-live subset (rank 0: checker-validated AND not relay-demoted),
 	// rebuilt each refresh. next() round-robins STRICTLY over it (via liveIndex) so
@@ -108,11 +109,13 @@ func (s *selector) refresh(ctx context.Context) error {
 
 	if len(list) == 0 {
 		s.candidates = nil
+		s.members = nil
 		s.live = nil
 		return ErrNoProxyAvailable
 	}
 
 	s.candidates = list
+	s.members = seen
 	if s.nextIndex >= len(s.candidates) {
 		s.nextIndex = 0
 	}
@@ -197,4 +200,14 @@ func (s *selector) next(ctx context.Context) (string, []string, error) {
 		return pick, out, nil
 	}
 	return ordered[0], ordered, nil
+}
+
+func (s *selector) eligible(upstream string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.health.failed(upstream) {
+		return false
+	}
+	_, ok := s.members[upstream]
+	return ok
 }
